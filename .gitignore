@@ -1,0 +1,24 @@
+# Virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Generated report output (regenerate locally; not source)
+reports/
+validate_results.csv
+
+# Claude Code project settings
+.claude/
+
+# Unrelated documents living alongside this project
+*.docx
+~$*.docx
+mutcd*.pdf
+
+# Leftover from restructuring into Speed&Volume/ (safety net if it can't be deleted)
+/app/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.log
