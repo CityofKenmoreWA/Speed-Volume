@@ -5,7 +5,9 @@ Methodology (see project memory for the full audit):
   * Percentile speeds              -> WEEKDAY (Mon-Fri) distribution only,
                                       cumulative P(speed < s), linear interp.
   * ADT = total / study_days; Average Weekday Traffic = mean of Mon-Fri totals.
-  * Hourly "Weekday Avg" (drives AM/PM peak) = mean of Mon-Thu only.
+  * AM/PM/overall peak hour -> busiest 60-min (15-min sliding) window of average
+    WEEKDAY (Mon-Fri) volume; each peak carries its average weekday hourly volume.
+  * Hourly table "Weekday Avg" column = mean of Mon-Thu only (legacy Excel quirk).
 """
 from __future__ import annotations
 
@@ -54,6 +56,39 @@ def percentile_speed(counts_by_speed: dict[int, int], target_pct: float,
 
 def _counts_by_speed(speeds: pd.Series) -> dict[int, int]:
     return speeds.round().astype(int).value_counts().to_dict()
+
+
+def _fmt_clock(minutes: int) -> str:
+    minutes %= 24 * 60
+    h, mm = divmod(minutes, 60)
+    return f"{(h % 12) or 12}:{mm:02d} {'AM' if h < 12 else 'PM'}"
+
+
+def peak_hours_15min(df, cfg: AnalysisConfig = DEFAULT_ANALYSIS):
+    """AM / PM / overall peak hour via a 15-minute sliding 60-minute window.
+
+    Uses average weekday (Mon-Fri) volume per 15-min bin, then the busiest
+    4-bin (60-min) window. Returns (am, pm, overall), each ``(label, volume)`` or
+    None, where ``label`` is the window's start-end time and ``volume`` is the
+    average weekday vehicles in that hour.
+    """
+    wd = df[df[TS].dt.dayofweek.isin(cfg.weekday_indices)]
+    if wd.empty:
+        return None, None, None
+    n_days = wd[TS].dt.normalize().nunique() or 1
+    bins = wd[TS].dt.hour * 4 + wd[TS].dt.minute // 15
+    counts = bins.value_counts()
+    avg = np.array([counts.get(b, 0) / n_days for b in range(96)], dtype=float)
+    win = np.convolve(avg, np.ones(4), mode="valid")   # win[b] = 60-min window starting at 15-min bin b (0..92)
+
+    def peak(lo, hi):
+        seg = win[lo:hi]
+        if len(seg) == 0 or seg.max() == 0:
+            return None
+        b = lo + int(np.argmax(seg))
+        return (f"{_fmt_clock(b * 15)} - {_fmt_clock(b * 15 + 60)}", float(win[b]))
+
+    return peak(0, 48), peak(48, 93), peak(0, 93)
 
 
 def design_dates_for(dates, cfg: AnalysisConfig = DEFAULT_ANALYSIS) -> list:
@@ -107,10 +142,12 @@ class DirectionMetrics:
     daily_totals: dict = field(default_factory=dict)      # weekday name -> count
     daily_sequence: list = field(default_factory=list)    # [(weekday name, count)] chronological (Day1..Day7)
     hourly_volume: Optional[pd.DataFrame] = None          # 24 x (dates + aggregates)
-    hourly_speed: Optional[pd.DataFrame] = None
+    hourly_speed: Optional[pd.DataFrame] = None           # mean speed 24 x (dates + Average aggregates)
+    hourly_p85: Optional[pd.DataFrame] = None             # 85th %ile 24 x (dates + Overall aggregates)
     hourly_weekday_p85: Optional[pd.Series] = None        # per-hour weekday (first-5-day) 85th
-    am_peak: Optional[tuple] = None                       # (hour_label, value)
+    am_peak: Optional[tuple] = None                       # (hour_label, avg weekday veh in the 60-min window)
     pm_peak: Optional[tuple] = None
+    peak_hour: Optional[tuple] = None                     # overall busiest 60-min window (for trend table)
     class_counts: dict = field(default_factory=dict)
     class_pct: dict = field(default_factory=dict)
     direction_counts: dict = field(default_factory=dict)
@@ -217,6 +254,7 @@ def compute_direction_metrics(df: pd.DataFrame, label: str, speed_limit: float,
              .reindex(index=range(24), columns=ordered_dates))
     m.hourly_volume = _add_aggregates(vol, ordered_dates, cfg)
     m.hourly_speed = _add_aggregates(spd, ordered_dates, cfg, mean=True)
+    m.hourly_p85 = _hourly_p85_matrix(df, ordered_dates, cfg)
 
     # Per-hour weekday (first-5-day) design-percentile speed — Excel "Weekday 85th
     # Percentile" column: same cumulative-interpolation method, per hour, None if empty.
@@ -227,14 +265,9 @@ def compute_direction_metrics(df: pd.DataFrame, label: str, speed_limit: float,
         p85_by_hour[h] = percentile_speed(cbs_h, cfg.design_percentile * 100, cfg.max_speed_bin)
     m.hourly_weekday_p85 = pd.Series(p85_by_hour, name="Weekday 85th %ile")
 
-    # AM / PM peak hour from the weekday (Mon-Thu) hourly average.
-    wavg = m.hourly_volume["Weekday Avg"]
-    am = wavg.loc[0:11]
-    pm = wavg.loc[12:23]
-    if am.notna().any():
-        h = int(am.idxmax()); m.am_peak = (HOUR_LABELS[h], float(am.loc[h]))
-    if pm.notna().any():
-        h = int(pm.idxmax()); m.pm_peak = (HOUR_LABELS[h], float(pm.loc[h]))
+    # AM / PM / overall peak hour via a 15-minute sliding 60-minute window
+    # (average weekday volume). Replaces the whole-clock-hour weekday-average method.
+    m.am_peak, m.pm_peak, m.peak_hour = peak_hours_15min(df, cfg)
 
     if df[CLASS].notna().any():
         vc = df[CLASS].value_counts()
@@ -267,4 +300,42 @@ def _add_aggregates(mat: pd.DataFrame, dates, cfg: AnalysisConfig, mean: bool = 
     out["Average"] = avg
     out["Weekday Avg"] = wd
     out["Weekend Avg"] = we
+    return out
+
+
+def _hourly_p85_matrix(df: pd.DataFrame, dates, cfg: AnalysisConfig) -> pd.DataFrame:
+    """Per hour x day design-percentile (85th) speed, plus pooled Overall /
+    Weekday Overall / Weekend Overall columns.
+
+    A percentile is itself an aggregating statistic, so the summary columns are the
+    percentile of the POOLED speeds for that hour (over all days / Mon-Thu / Sat-Sun) —
+    NOT the mean of the per-day percentiles, which would be meaningless. Day groupings
+    match the mean-speed table (Weekday = Mon-Thu, Weekend = Sat-Sun).
+    """
+    pct = cfg.design_percentile * 100.0
+
+    def p85(speeds: pd.Series):
+        if len(speeds) == 0:
+            return np.nan
+        r = percentile_speed(_counts_by_speed(speeds), pct, cfg.max_speed_bin)
+        return np.nan if r is None else r
+
+    # Per (hour, day) cell.
+    cell = (df.groupby(["hour", "date"])[SPEED].apply(p85)
+              .unstack("date").reindex(index=range(24), columns=list(dates)))
+    dows = {d: pd.Timestamp(d).dayofweek for d in dates}
+    out = cell.rename(columns={d: DOW_NAMES[dows[d]] for d in dates})
+    day_order = [DOW_NAMES[i] for i in range(7) if DOW_NAMES[i] in out.columns]
+    out = out[day_order]
+
+    # Pooled per-hour percentile over each day set.
+    def pooled(mask) -> pd.Series:
+        sub = df[mask]
+        if sub.empty:
+            return pd.Series(np.nan, index=range(24))
+        return sub.groupby("hour")[SPEED].apply(p85).reindex(range(24))
+
+    out["Overall"] = pooled(df["dow"].notna())
+    out["Weekday Overall"] = pooled(df["dow"].isin((0, 1, 2, 3)))
+    out["Weekend Overall"] = pooled(df["dow"].isin((5, 6)))
     return out

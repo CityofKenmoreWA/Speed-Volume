@@ -16,7 +16,9 @@ from datetime import datetime
 from jinja2 import Template
 
 from . import styling
-from .config import DIRECTION, AnalysisConfig, DEFAULT_ANALYSIS
+from .config import (DIRECTION, AnalysisConfig, DEFAULT_ANALYSIS, KENMORE_AMBER,
+                     KENMORE_NAVY, KENMORE_TEAL, LOGO_PATH)
+from .discovery import maps_url
 from .figures import build_figures, fig_dfactor, save_figures
 from .metrics import HOUR_LABELS
 
@@ -28,9 +30,8 @@ SPEED_BOX = [("85th Percentile Speed", "design_speed", "{:.2f}", "speed"),
              ("Median Speed", "median_speed", "{:.2f}", "speed"),
              ("Maximum Speed", "max_speed", "{:.0f}", "speed"),
              ("% Over Limit", "over_limit_pct", "{:.1f}", "plain")]
-VOLUME_BOX = [("Total Vehicles", "total", "{:.0f}", "count"),
+VOLUME_BOX = [("Average Weekday Traffic", "avg_weekday_traffic", "{:.1f}", "count"),
               ("Average Daily Traffic", "adt", "{:.1f}", "count"),
-              ("Average Weekday Traffic", "avg_weekday_traffic", "{:.1f}", "count"),
               ("AM Peak Hour", "am_peak", None, "peak"),
               ("PM Peak Hour", "pm_peak", None, "peak")]
 
@@ -49,7 +50,7 @@ def _summary_boxes(result, limit):
             for d in dirs:
                 v = getattr(result.metrics[d], attr)
                 if kind == "peak":
-                    cells.append((v[0] if v else "—", None))
+                    cells.append((f"{v[0]} ({v[1]:.0f} veh)" if v else "—", None))
                     continue
                 ok = isinstance(v, (int, float)) and v == v
                 txt = fmt.format(v) if ok else "—"
@@ -87,11 +88,38 @@ def direction_window(window, label: str):
     return window[window[DIRECTION] == label]
 
 
+def direction_display(notes) -> dict:
+    """Map canonical direction keys to display labels using the notes (e.g. NB/SB).
+
+    Incoming/Outgoing become the compass heading recorded in ``_Notes.txt``; when the
+    notes don't specify one, the generic word is kept. Merged stays "Merged".
+    """
+    notes = notes or {}
+    return {
+        "Merged": "Merged",
+        "Incoming": notes.get("incoming") or "Incoming",
+        "Outgoing": notes.get("outgoing") or "Outgoing",
+    }
+
+
 def _fig_to_b64(fig) -> str:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("ascii")
+
+
+def _img_file_data_uri(path) -> str:
+    """Read an image file into a base64 data: URI (empty string if missing/unreadable)."""
+    if not path or not os.path.exists(path):
+        return ""
+    ext = os.path.splitext(path)[1].lower().lstrip(".")
+    mime = "jpeg" if ext in ("jpg", "jpeg") else ("png" if "png" in ext else ext or "png")
+    try:
+        with open(path, "rb") as fh:
+            return f"data:image/{mime};base64," + base64.b64encode(fh.read()).decode("ascii")
+    except Exception:
+        return ""
 
 
 def _class_rows(m):
@@ -100,14 +128,38 @@ def _class_rows(m):
 
 
 def hourly_report_table(m):
-    """Hourly volume matrix with the per-hour Weekday 85th %ile prepended,
-    matching the legacy Report sheet's hourly block."""
+    """Hourly volume matrix (per-day counts + Average/Weekday/Weekend aggregates).
+
+    The per-hour 85th-percentile speed lives in its own table now (``m.hourly_p85``),
+    since it is a speed statistic, not a volume."""
     if m.hourly_volume is None:
         return None
-    t = m.hourly_volume.copy()
-    if m.hourly_weekday_p85 is not None:
-        t.insert(0, "Weekday 85th %ile", m.hourly_weekday_p85)
-    return t
+    return m.hourly_volume.copy()
+
+
+# Hourly tables shown in the HTML report / Streamlit: (title, matrix, kind, group col).
+def _hourly_specs(m):
+    return [("Hourly Volume", hourly_report_table(m), "count", "Average"),
+            ("Hourly 85th Percentile Speed", m.hourly_p85, "speed", "Overall"),
+            ("Hourly Average Speed", m.hourly_speed, "speed", "Average")]
+
+
+def _hourly_tables_html(m, limit) -> str:
+    """The three hourly matrices as colored HTML tables, each with a thick rule
+    before its summary columns (Average / Overall)."""
+    blocks = []
+    for title, mat, kind, grp in _hourly_specs(m):
+        if mat is None:
+            continue
+        t = mat.copy()
+        t.index = [HOUR_LABELS[h] if h < len(HOUR_LABELS) else str(h) for h in t.index]
+        if kind == "speed":
+            sty = styling.style_speed(t, limit).format(precision=2)
+        else:
+            sty = styling.style_hourly_table(t, limit)
+        sty = styling.add_col_dividers(sty, [grp])
+        blocks.append(f'<h3>{title}</h3><div style="overflow-x:auto">{sty.to_html()}</div>')
+    return "".join(blocks)
 
 
 # --------------------------------------------------------------------------- #
@@ -116,20 +168,29 @@ def hourly_report_table(m):
 _HTML = Template("""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>{{ title }}</title>
 <style>
- body{font-family:Segoe UI,Arial,sans-serif;margin:24px;color:#222;}
- h1{font-size:20px;margin-bottom:2px} h2{font-size:16px;border-bottom:2px solid #5b62d6;padding-bottom:3px;margin-top:26px}
- h3{font-size:14px;color:#3b41a8;margin:14px 0 4px}
+ body{font-family:Oswald,'Segoe UI',Arial,sans-serif;margin:24px;color:#222;}
+ h1{font-size:20px;margin-bottom:2px;color:#0E1E37} h2{font-size:16px;border-bottom:2px solid #0E1E37;padding-bottom:3px;margin-top:26px;color:#0E1E37}
+ h3{font-size:14px;color:#016666;margin:14px 0 4px}
  .meta{color:#555;font-size:13px;margin-bottom:8px}
  table{border-collapse:collapse;margin:8px 0;font-size:13px}
  th,td{border:1px solid #ccc;padding:4px 8px;text-align:right}
- th{background:#eef0fb;text-align:center} td.l,th.l{text-align:left}
+ th{background:#E4E6EA;text-align:center} td.l,th.l{text-align:left}
  .risk{display:inline-block;padding:2px 10px;border-radius:10px;color:#fff;font-weight:bold}
  .findings li{margin:3px 0} .sev{font-weight:bold}
  .figs img{max-width:520px;border:1px solid #ddd;margin:6px;vertical-align:top}
- .note{background:#fafafa;border-left:3px solid #5b62d6;padding:6px 10px;white-space:pre-wrap;font-size:13px}
+ .note{background:#fafafa;border-left:3px solid #016666;padding:6px 10px;white-space:pre-wrap;font-size:13px}
  .recap{font-size:13px;color:#333;margin:2px 0 6px}
  .tabs{display:flex;flex-wrap:wrap;gap:20px}
+ .letterhead{display:flex;align-items:center;gap:16px;border-bottom:4px solid #FFB300;padding-bottom:10px;margin-bottom:14px}
+ .letterhead img{height:74px;width:auto}
+ .lh-city{font-size:22px;font-weight:700;color:#0E1E37;letter-spacing:.5px;line-height:1.1}
+ .lh-sub{font-size:12px;color:#016666;text-transform:uppercase;letter-spacing:1px}
 </style></head><body>
+{% if logo %}<div class="letterhead">
+ <img src="{{ logo }}" alt="City of Kenmore">
+ <div><div class="lh-city">City of Kenmore</div>
+ <div class="lh-sub">Traffic Study Diagnostics &amp; Report</div></div>
+</div>{% endif %}
 <h1>{{ title }}</h1>
 <div class="meta">
  Location: <b>{{ location }}</b> &nbsp;|&nbsp; Directions: {{ inc }} (in) / {{ out }} (out)
@@ -138,6 +199,19 @@ _HTML = Template("""<!DOCTYPE html><html><head><meta charset="utf-8">
  &nbsp;|&nbsp; Generated: {{ generated }}
 </div>
 {% if notes %}<div class="note">{{ notes }}</div>{% endif %}
+
+{% if loc_imgs or map_img %}
+<h2>Installation Site</h2>
+<div class="meta">Location: <b>{{ location }}</b> &nbsp;|&nbsp; Installed: {{ install_date }}
+ &nbsp;|&nbsp; Incoming: {{ inc }} · Outgoing: {{ out }}
+{% if maps_url %} &nbsp;|&nbsp; 📍 <a href="{{ maps_url }}">Open in Google Maps</a> ({{ gps }}){% endif %}</div>
+<div class="figs">
+{% for img in loc_imgs %}<figure style="display:inline-block;margin:6px"><img src="{{ img }}" style="max-width:400px">
+<figcaption style="font-size:12px;color:#555">Installation site photo{% if loc_imgs|length > 1 %} {{ loop.index }} of {{ loc_imgs|length }}{% endif %}</figcaption></figure>{% endfor %}
+{% if map_img %}<figure style="display:inline-block;margin:6px"><img src="{{ map_img }}" style="max-width:400px">
+<figcaption style="font-size:12px;color:#555">Location map</figcaption></figure>{% endif %}
+</div>
+{% endif %}
 
 <h2>Data Quality Diagnostics
   &nbsp;<span class="risk" style="background:{{ risk_color }}">{{ risk|upper }} RISK</span></h2>
@@ -165,7 +239,7 @@ _HTML = Template("""<!DOCTYPE html><html><head><meta charset="utf-8">
 <div class="figs"><img src="data:image/png;base64,{{ dfactor_img }}"></div>
 
 {% for sec in sections %}
-<h2>{{ sec.label }} Report</h2>
+<h2>{{ sec.dlabel }} Report</h2>
 <div class="recap">{{ sec.recap }}</div>
 <div class="tabs">
 <div><h3>Speed Percentiles</h3>
@@ -181,6 +255,7 @@ _HTML = Template("""<!DOCTYPE html><html><head><meta charset="utf-8">
 </table></div>
 </div>
 <div class="figs">{% for img in sec.figures %}<img src="data:image/png;base64,{{ img }}">{% endfor %}</div>
+{{ sec.hourly_html|safe }}
 {% endfor %}
 </body></html>""")
 
@@ -195,6 +270,7 @@ def _recap(m) -> str:
 def build_html_report(result, cfg: AnalysisConfig = DEFAULT_ANALYSIS, directions=None) -> str:
     sd = result.data
     directions = directions or list(result.metrics)
+    dmap = direction_display(sd.notes)
     import matplotlib.pyplot as plt
 
     sections = []
@@ -205,21 +281,24 @@ def build_html_report(result, cfg: AnalysisConfig = DEFAULT_ANALYSIS, directions
         imgs = [_fig_to_b64(f) for f in figs.values()]
         for f in figs.values():
             plt.close(f)
-        sections.append({"label": label, "recap": _recap(m),
+        sections.append({"label": label, "dlabel": dmap.get(label, label), "recap": _recap(m),
                          "pct_rows": _pct_rows_colored(m, sd.speed_limit),
-                         "class_rows": _class_rows(m), "figures": imgs})
+                         "class_rows": _class_rows(m), "figures": imgs,
+                         "hourly_html": _hourly_tables_html(m, sd.speed_limit)})
 
     dir_names = {"Incoming": sd.notes.get("incoming"), "Outgoing": sd.notes.get("outgoing")}
     dfig = fig_dfactor(result.metrics, cfg, dir_names)
     dfactor_img = _fig_to_b64(dfig); plt.close(dfig)
 
     dirs, speed_rows, volume_rows = _summary_boxes(result, sd.speed_limit)
+    dirs = [dmap.get(d, d) for d in dirs]
     diag = result.diagnostics
     findings = [{"category": f.category, "severity": f.severity, "message": f.message,
                  "color": _SEV_COLOR.get(f.severity, "#777")}
                 for f in (diag.findings if diag else [])]
     return _HTML.render(
         title=f"Speed & Volume Study — {sd.study.location}",
+        logo=_img_file_data_uri(LOGO_PATH),
         location=sd.study.location, inc=sd.notes.get("incoming") or "?",
         out=sd.notes.get("outgoing") or "?", speed_limit=f"{sd.speed_limit:g}",
         start=str(sd.window_start), end=str(sd.window_end),
@@ -227,6 +306,11 @@ def build_html_report(result, cfg: AnalysisConfig = DEFAULT_ANALYSIS, directions
         sl_source=_SL_LABEL.get(sd.speed_limit_source, sd.speed_limit_source),
         generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
         notes=sd.notes.get("raw", ""),
+        install_date=(sd.study.install_date.isoformat() if sd.study.install_date else "—"),
+        maps_url=sd.study.loc_maps_url,
+        gps=(", ".join(f"{c:.5f}" for c in sd.study.loc_gps) if sd.study.loc_gps else ""),
+        loc_imgs=[u for u in (_img_file_data_uri(p) for p in sd.study.loc_photos) if u],
+        map_img=_img_file_data_uri(sd.study.map_image),
         risk=(diag.risk if diag else "unknown"),
         risk_color=_RISK_COLOR.get(diag.risk if diag else "", "#777"),
         findings=findings, dirs=dirs, speed_rows=speed_rows, volume_rows=volume_rows,
@@ -256,14 +340,14 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import (Image, PageBreak, Paragraph, SimpleDocTemplate,
-                                    Spacer, Table, TableStyle)
+    from reportlab.platypus import (HRFlowable, Image, PageBreak, Paragraph,
+                                    SimpleDocTemplate, Spacer, Table, TableStyle)
 
     sd = result.data
     directions = directions or list(result.metrics)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     styles = getSampleStyleSheet()
-    h2 = ParagraphStyle("h2", parent=styles["Heading2"], textColor=colors.HexColor("#3b41a8"))
+    h2 = ParagraphStyle("h2", parent=styles["Heading2"], textColor=colors.HexColor(KENMORE_NAVY))
     small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8, leading=10)
 
     doc = SimpleDocTemplate(path, pagesize=letter, leftMargin=0.6 * inch, rightMargin=0.6 * inch,
@@ -271,7 +355,24 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
                             title=f"Speed & Volume Study — {sd.study.location}")
     avail_w = doc.width
     m0 = result.merged
-    flow = [Paragraph(f"Speed &amp; Volume Study — {sd.study.location}", styles["Title"])]
+
+    # City of Kenmore letterhead: logo + wordmark, then a gold rule.
+    lh_city = ParagraphStyle("lhcity", parent=styles["Title"], fontSize=17, alignment=0,
+                             spaceAfter=0, textColor=colors.HexColor(KENMORE_NAVY))
+    lh_sub = ParagraphStyle("lhsub", parent=styles["Normal"], fontSize=9,
+                            textColor=colors.HexColor(KENMORE_TEAL))
+    logo_cell = (Image(LOGO_PATH, width=0.85 * inch, height=0.85 * inch, kind="proportional")
+                 if os.path.exists(LOGO_PATH) else "")
+    letterhead = Table(
+        [[logo_cell, [Paragraph("City of Kenmore", lh_city),
+                      Paragraph("Traffic Study Diagnostics &amp; Report", lh_sub)]]],
+        colWidths=[1.0 * inch, avail_w - 1.0 * inch])
+    letterhead.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                    ("LEFTPADDING", (0, 0), (0, 0), 0)]))
+    flow = [letterhead,
+            HRFlowable(width="100%", thickness=3, color=colors.HexColor(KENMORE_AMBER),
+                       spaceBefore=3, spaceAfter=8),
+            Paragraph(f"Speed &amp; Volume Study — {sd.study.location}", styles["Title"])]
     meta = (f"Location: <b>{sd.study.location}</b> | Directions: {sd.notes.get('incoming')} (in) / "
             f"{sd.notes.get('outgoing')} (out) | Speed limit: {sd.speed_limit:g} mph "
             f"({_SL_LABEL.get(sd.speed_limit_source, sd.speed_limit_source)})<br/>"
@@ -281,6 +382,29 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
     if sd.notes.get("raw"):
         flow += [Paragraph("<i>" + sd.notes["raw"].replace("\n", "<br/>") + "</i>", small),
                  Spacer(1, 8)]
+
+    # Installation site photo(s) + location map (skipped silently if unreadable).
+    # A site may have several installation photos (*_Loc1 / *_Loc2); include them all.
+    site_imgs = []
+    for p in (*sd.study.loc_photos, sd.study.map_image):
+        if p and os.path.exists(p):
+            try:
+                site_imgs.append(Image(p, width=avail_w / 2 - 6, height=2.2 * inch, kind="proportional"))
+            except Exception:
+                pass
+    if site_imgs:
+        # Two images per row so extra photos wrap instead of shrinking off the page.
+        # Pad a trailing odd image with an empty cell (reportlab needs equal-length rows).
+        rows = [site_imgs[i:i + 2] for i in range(0, len(site_imgs), 2)]
+        if len(rows[-1]) == 1:
+            rows[-1].append("")
+        flow += [Paragraph("Installation Site", h2),
+                 Table(rows, colWidths=[avail_w / 2] * 2)]
+        gps = sd.study.loc_gps
+        if gps:
+            flow += [Paragraph(f'Photo GPS: {gps[0]:.5f}, {gps[1]:.5f} — '
+                               f'<a href="{maps_url(*gps)}" color="blue">Open in Google Maps</a>', small)]
+        flow += [Spacer(1, 8)]
 
     diag = result.diagnostics
     risk = diag.risk if diag else "unknown"
@@ -298,10 +422,12 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
         flow += [Paragraph("No issues detected.", small)]
     flow += [Spacer(1, 10)]
 
+    dmap = direction_display(sd.notes)
     dirs, speed_rows, volume_rows = _summary_boxes(result, sd.speed_limit)
+    disp_dirs = [dmap.get(d, d) for d in dirs]
     boxes = Table([[Paragraph("Speed", h2), Paragraph("Volume", h2)],
-                   [_box_table(speed_rows, dirs, avail_w / 2 - 4),
-                    _box_table(volume_rows, dirs, avail_w / 2 - 4)]],
+                   [_box_table(speed_rows, disp_dirs, avail_w / 2 - 4),
+                    _box_table(volume_rows, disp_dirs, avail_w / 2 - 4)]],
                   colWidths=[avail_w / 2, avail_w / 2])
     boxes.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     flow += [Paragraph("Summary Statistics", h2), boxes]
@@ -318,7 +444,7 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
         for label in directions:
             m = result.metrics[label]
             sub = direction_window(sd.window, label)
-            flow += [PageBreak(), Paragraph(f"{label} Report", h2),
+            flow += [PageBreak(), Paragraph(f"{dmap.get(label, label)} Report", h2),
                      Paragraph(_recap(m), small), Spacer(1, 4)]
             flow += [_pct_class_combo(m, avail_w, h2, small, sd.speed_limit)]
             figs = build_figures(sub, m, cfg)
@@ -328,22 +454,89 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
             for name in _FIG_ORDER:
                 if name in paths:
                     flow += [Image(paths[name], width=avail_w, height=avail_w * 0.5), Spacer(1, 6)]
+            for title, mat, kind, grp in _hourly_specs(m):
+                if mat is None:
+                    continue
+                flow += [PageBreak(), Paragraph(f"{dmap.get(label, label)} — {title}", h2),
+                         _pdf_matrix(mat, kind, grp, sd.speed_limit, avail_w)]
         doc.build(flow)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     return path
 
 
-def _box_table(rows, dirs, total_w):
-    """A summary sub-table (Speed or Volume) with per-cell background colors."""
+def _pdf_matrix(mat, kind, group_col, limit, avail_w):
+    """A colored hourly matrix as a reportlab Table, with a thick rule before the
+    summary columns. ``kind`` is 'speed' (speed scale) or 'count' (white->blue)."""
+    import math
+
     from reportlab.lib import colors
-    from reportlab.platypus import Table
-    data = [["Metric"] + list(dirs)] + [[name] + [txt for txt, _ in cells] for name, cells in rows]
+    from reportlab.platypus import Table, TableStyle
+
+    cols = list(mat.columns)
+    ncol = len(cols)
+    header = ["Hr"] + [str(c)[:9] for c in cols]
+    rows = [header]
+
+    vmin = vmax = 0.0
+    if kind != "speed":
+        nums = [float(mat.loc[i, c]) for c in cols for i in mat.index
+                if not (isinstance(mat.loc[i, c], float) and math.isnan(mat.loc[i, c]))]
+        vmin, vmax = (min(nums), max(nums)) if nums else (0.0, 1.0)
+
+    style = [("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#cccccc")),
+             ("FONTSIZE", (0, 0), (-1, -1), 5.5),
+             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef0fb")),
+             ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+             ("TOPPADDING", (0, 0), (-1, -1), 1), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]
+    for ri, (hour, row) in enumerate(mat.iterrows(), start=1):
+        line = [f"{hour:02d}:00"]
+        for ci, c in enumerate(cols, start=1):
+            v = row[c]
+            if isinstance(v, float) and math.isnan(v):
+                line.append("")
+                continue
+            if kind == "speed":
+                line.append(f"{v:.1f}"); bg = styling.speed_hex(v, limit)
+            else:
+                line.append(f"{v:.0f}"); bg = styling.count_hex(v, vmin, vmax)
+            if bg:
+                style.append(("BACKGROUND", (ci, ri), (ci, ri), colors.HexColor(bg)))
+        rows.append(line)
+    if group_col in cols:
+        gc = cols.index(group_col) + 1
+        # Absolute last-row index (not -1): a -1 end row here trips a reportlab
+        # draw-time IndexError when the table follows another flowable.
+        style.append(("LINEBEFORE", (gc, 0), (gc, len(mat)), 1.4, colors.HexColor("#333333")))
+    cw = [avail_w * 0.09] + [(avail_w * 0.91) / ncol] * ncol
+    t = Table(rows, colWidths=cw)
+    t.setStyle(TableStyle(style))
+    return t
+
+
+def _box_table(rows, dirs, total_w):
+    """A summary sub-table (Speed or Volume) with per-cell background colors.
+
+    Values are Paragraphs so long entries (e.g. a peak-hour window + volume) wrap
+    within their column instead of overflowing and overlapping neighbors."""
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, Table
+
+    val = ParagraphStyle("boxval", fontSize=7.5, leading=9, alignment=2)      # right
+    name_s = ParagraphStyle("boxname", fontSize=7.5, leading=9, alignment=0)  # left
+    hdr = ParagraphStyle("boxhdr", fontSize=7.5, leading=9, alignment=1,
+                         fontName="Helvetica-Bold")
+    header = [Paragraph("Metric", name_s)] + [Paragraph(str(d), hdr) for d in dirs]
+    data = [header] + [[Paragraph(str(name), name_s)]
+                       + [Paragraph(str(txt), val) for txt, _ in cells]
+                       for name, cells in rows]
     ncol = len(dirs)
-    metric_w = total_w * 0.46
+    metric_w = total_w * 0.42
     cw = [metric_w] + [(total_w - metric_w) / ncol] * ncol
     extra = [("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef0fb")),
-             ("ALIGN", (1, 0), (-1, -1), "RIGHT"), ("ALIGN", (0, 0), (0, -1), "LEFT")]
+             ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]
     for ri, (_name, cells) in enumerate(rows, start=1):
         for ci, (_txt, bg) in enumerate(cells, start=1):
             if bg:
@@ -404,13 +597,14 @@ def write_excel_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     wb = xlsxwriter.Workbook(path, {"nan_inf_to_errors": True})
     h = wb.add_format({"bold": True, "bg_color": "#eef0fb", "border": 1})
+    hL = wb.add_format({"bold": True, "bg_color": "#eef0fb", "border": 1, "left": 5})
     b = wb.add_format({"border": 1})
     title = wb.add_format({"bold": True, "font_size": 14})
 
     _cache: dict = {}
 
-    def fmt(bg=None, num=None, bold=False):
-        key = (bg, num, bold)
+    def fmt(bg=None, num=None, bold=False, left=0):
+        key = (bg, num, bold, left)
         if key not in _cache:
             d = {"border": 1}
             if bg:
@@ -420,6 +614,8 @@ def write_excel_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS
                 d["num_format"] = num
             if bold:
                 d["bold"] = True
+            if left:
+                d["left"] = left     # thick vertical rule between column groups
             _cache[key] = wb.add_format(d)
         return _cache[key]
 
@@ -430,13 +626,15 @@ def write_excel_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS
                    f"({result.merged.n_days} days)   Speed limit: {limit:g} mph "
                    f"({_SL_LABEL.get(sd.speed_limit_source, sd.speed_limit_source)})")
     ws.write(2, 0, f"Directions: {sd.notes.get('incoming')} (in) / {sd.notes.get('outgoing')} (out)")
+    dmap = direction_display(sd.notes)
     dirs, speed_rows, volume_rows = _summary_boxes(result, limit)
+    disp_dirs = [dmap.get(d, d) for d in dirs]
     ndir = len(dirs)
 
     def write_box(r0, c0, heading, rows):
         ws.write(r0, c0, heading, h)
         ws.write(r0 + 1, c0, "Metric", h)
-        for j, d in enumerate(dirs):
+        for j, d in enumerate(disp_dirs):
             ws.write(r0 + 1, c0 + 1 + j, d, h)
         for i, (name, cells) in enumerate(rows, start=2):
             ws.write(r0 + i, c0, name, b)
@@ -450,7 +648,7 @@ def write_excel_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS
     r = 4 + max(len(speed_rows), len(volume_rows)) + 4
     for label in dirs:
         m = result.metrics[label]
-        ws.write(r, 0, f"{label} — Speed Percentiles", h)
+        ws.write(r, 0, f"{dmap.get(label, label)} — Speed Percentiles", h)
         ws.write(r, 1, "Speed", h); ws.write(r, 2, "Excess", h)
         for p, s, e in m.pct_table:
             r += 1
@@ -460,13 +658,17 @@ def write_excel_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS
             ws.write(r, 2, e if e is not None else "", fmt(num="0.00"))
         r += 2
 
-    # Per-direction hourly matrices.
+    # Per-direction hourly matrices: Volume (counts), 85th %ile speed, Mean speed.
+    # A thick rule separates the per-day columns from the summary columns.
     for label in dirs:
         m = result.metrics[label]
-        _write_matrix(wb.add_worksheet(f"{label} Volume"[:31]), hourly_report_table(m), h, fmt,
-                      limit, speed_col="Weekday 85th %ile")
-        _write_matrix(wb.add_worksheet(f"{label} Speed"[:31]), m.hourly_speed, h, fmt,
-                      limit, all_speed=True)
+        dlabel = dmap.get(label, label)
+        _write_matrix(wb.add_worksheet(f"{dlabel} Volume"[:31]), hourly_report_table(m), h, fmt,
+                      limit, group_starts=("Average",), hL=hL)
+        _write_matrix(wb.add_worksheet(f"{dlabel} 85th"[:31]), m.hourly_p85, h, fmt,
+                      limit, all_speed=True, group_starts=("Overall",), hL=hL)
+        _write_matrix(wb.add_worksheet(f"{dlabel} Speed"[:31]), m.hourly_speed, h, fmt,
+                      limit, all_speed=True, group_starts=("Average",), hL=hL)
 
     wd = wb.add_worksheet("Diagnostics")
     wd.set_column(0, 0, 20); wd.set_column(1, 2, 60)
@@ -480,12 +682,17 @@ def write_excel_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS
     return path
 
 
-def _write_matrix(ws, mat, h, fmt, limit, speed_col=None, all_speed=False):
+def _write_matrix(ws, mat, h, fmt, limit, speed_col=None, all_speed=False,
+                  group_starts=(), hL=None):
     """Write an hour×column matrix with cell coloring.
 
     all_speed=True colors every numeric cell on the speed scale (hourly speed).
     Otherwise ``speed_col`` (if given) is speed-colored and the remaining numeric
     columns are white→blue, normalized over those count columns.
+
+    ``group_starts`` names columns that begin a new logical group (e.g. "Average"):
+    a thick left border is drawn on that column (header via ``hL``) to visually
+    separate the per-day block from the summary block.
     """
     import math
     if mat is None:
@@ -497,19 +704,22 @@ def _write_matrix(ws, mat, h, fmt, limit, speed_col=None, all_speed=False):
             if not (isinstance(mat.loc[i, c], float) and math.isnan(mat.loc[i, c]))]
     vmin, vmax = (min(nums), max(nums)) if nums and not all_speed else (0.0, 1.0)
 
+    border_at = {j + 1 for j, c in enumerate(cols) if c in group_starts}   # +1: col 0 = Hour
+
     ws.write(0, 0, "Hour", h)
     for j, c in enumerate(cols):
-        ws.write(0, j + 1, str(c), h)
+        ws.write(0, j + 1, str(c), hL if (j + 1) in border_at and hL is not None else h)
     for i, (hour, row) in enumerate(mat.iterrows(), start=1):
         ws.write(i, 0, HOUR_LABELS[hour] if hour < len(HOUR_LABELS) else str(hour), h)
         for j, c in enumerate(cols):
+            left = 5 if (j + 1) in border_at else 0
             v = row[c]
             if isinstance(v, float) and math.isnan(v):
-                ws.write(i, j + 1, "", fmt())
+                ws.write(i, j + 1, "", fmt(left=left))
                 continue
             if all_speed or c == speed_col:
                 bg = styling.speed_hex(v, limit)
-                ws.write(i, j + 1, float(v), fmt(bg=bg, num="0.0"))
+                ws.write(i, j + 1, float(v), fmt(bg=bg, num="0.0", left=left))
             else:
                 bg = styling.count_hex(v, vmin, vmax)
-                ws.write(i, j + 1, float(v), fmt(bg=bg, num="0.0"))
+                ws.write(i, j + 1, float(v), fmt(bg=bg, num="0.0", left=left))

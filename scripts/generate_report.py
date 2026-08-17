@@ -24,13 +24,13 @@ import sys
 # Allow running as a plain script (no install needed).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from traffic_diag.config import DEFAULT_BASE  # noqa: E402  (defined below if missing)
+from traffic_diag.config import DEFAULT_BASE, REPORTS_DIR  # noqa: E402
 from traffic_diag.discovery import find_studies, find_years  # noqa: E402
 from traffic_diag.pipeline import process_study  # noqa: E402
 from traffic_diag.report import (write_excel_report, write_html_report,  # noqa: E402
                                   write_pdf_report)
 
-DEFAULT_OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "reports")
+DEFAULT_OUT = REPORTS_DIR
 
 
 def _select(base, year, location):
@@ -63,6 +63,8 @@ def main(argv=None):
     p.add_argument("--all", action="store_true", help="process every matching study")
     p.add_argument("--list", action="store_true", help="list years/locations and exit")
     p.add_argument("--validate", action="store_true", help="compare against the Excel reports")
+    p.add_argument("--trend", action="store_true",
+                   help="with --location: write a per-location over-time stats CSV (all years)")
     p.add_argument("--out", default=DEFAULT_OUT, help="output directory for reports")
     p.add_argument("--format", choices=["html", "excel", "pdf", "both", "all"], default="both")
     p.add_argument("--speed-limit", type=float, default=None,
@@ -99,6 +101,20 @@ def main(argv=None):
             print("\nMismatches:")
             print(bad[["study", "direction", "metric", "python", "excel", "abs_diff"]]
                   .to_string(index=False))
+        return 0
+
+    if args.trend:
+        from traffic_diag.trends import over_time_table
+        matches = _select(args.base, args.year, args.location)
+        if not matches:
+            print("No matching studies for --trend."); return 1
+        location = matches[0].location
+        table = over_time_table(args.base, location)
+        os.makedirs(args.out, exist_ok=True)
+        path = os.path.join(args.out, f"{location}_trend.csv")
+        table.to_csv(path, index=False)
+        print(f"[OK] {location}: {len(table)} studies over time -> {os.path.relpath(path)}")
+        print(table.to_string(index=False))
         return 0
 
     studies = _select(args.base, args.year, args.location)

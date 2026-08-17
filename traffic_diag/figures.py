@@ -28,6 +28,7 @@ from .metrics import DirectionMetrics, DOW_NAMES, HOUR_LABELS
 
 _BAR = "#4f81bd"      # Excel default blue
 _LINE = "#4f81bd"
+_WEEKEND = "#e08214"  # weekend bars (orange)
 
 
 def _weekday_speed_counts(window, cfg):
@@ -87,7 +88,7 @@ def fig_weekday_p85(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
             ax.annotate(f"{v:.1f}", (h, v), textcoords="offset points", xytext=(0, 4),
                         ha="center", fontsize=6)
     ax.set_xticks(range(24)); ax.set_xticklabels(HOUR_LABELS, rotation=90, fontsize=6)
-    ax.set_ylabel("Percentile Speed"); ax.set_xlabel("Time")
+    ax.set_ylabel("Percentile Speed (MPH)"); ax.set_xlabel("Time")
     # Robust y-range: 0 baseline + ~15% headroom above the tallest point/limit so the
     # value labels are never clipped.
     finite = [v for v in vals if v is not None]
@@ -128,24 +129,37 @@ def fig_dfactor(metrics: dict, cfg=DEFAULT_ANALYSIS, dir_names: dict | None = No
     pn = f"{dir_names.get(pname) or pname}"
     sn = f"{dir_names.get(sname) or sname}"
 
-    hours = np.arange(24)
+    # Drop hours with no traffic in either direction so empty overnight slots don't
+    # pad the axis (purely cosmetic; if every hour has data nothing is dropped).
+    keep = np.where((pv + sv) > 0)[0]
+    if keep.size == 0:
+        keep = np.arange(24)
+    pvk, svk = pv[keep], sv[keep]
+    pos = np.arange(len(keep))
+
     fig, ax = plt.subplots(figsize=(9, 5.4))
-    ax.bar(hours, pv, color="#4f81bd", label=f"{pn} (primary, ▲)")
-    ax.bar(hours, -sv, color="#e08214", label=f"{sn} (▼)")
+    ax.bar(pos, pvk, color="#4f81bd", label=f"{pn} (primary, ▲)")
+    ax.bar(pos, -svk, color="#e08214", label=f"{sn} (▼)")
     ax.axhline(0, color="black", lw=0.8)
-    ax.set_xticks(range(24)); ax.set_xticklabels(HOUR_LABELS, rotation=90, fontsize=6)
-    ax.set_ylabel("AWDT (veh/hr)   primary ▲ / other ▼"); ax.set_xlabel("Time")
-    ymax = max(pv.max(initial=0), sv.max(initial=0), 1.0)
+    ax.set_xticks(pos); ax.set_xticklabels([HOUR_LABELS[h] for h in keep], rotation=90, fontsize=6)
+    ax.set_ylabel(f"Avg weekday volume (veh/hr)\n▲ {pn} (above)   ▼ {sn} (below)")
+    ax.set_xlabel("Time")
+    ymax = max(pvk.max(initial=0), svk.max(initial=0), 1.0)
     ax.set_ylim(-ymax * 1.15, ymax * 1.15)
     # Show both halves as positive volumes (the sign only encodes direction).
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{abs(v):.0f}"))
 
-    tot = pv + sv
+    totk = pvk + svk
     with np.errstate(invalid="ignore", divide="ignore"):
-        d = np.where(tot > 0, pv / tot, np.nan)
+        d = np.where(totk > 0, pvk / totk, np.nan)
     ax2 = ax.twinx()
-    ax2.plot(hours, d, "o-", color="#222", ms=3, lw=1.2, label="D-factor")
-    ax2.set_ylim(0, 1.05); ax2.set_ylabel("D-Factor (0–1)")
+    ax2.plot(pos, d, "o-", color="#222", ms=3, lw=1.2, label="D-factor")
+    # Center 0.5 on the volume zero-line: use the SAME ±15% headroom as the left axis
+    # (symmetric about 0.5) so 0.5 sits at the vertical middle and 0.4/0.6 are
+    # equidistant from it. (0,1.05) put the midpoint at 0.525 and skewed the ticks.
+    ax2.set_ylim(0.5 - 0.575, 0.5 + 0.575)   # = (-0.075, 1.075)
+    ax2.set_yticks(np.arange(0.0, 1.01, 0.2))
+    ax2.set_ylabel("D-Factor (0–1)")
 
     overall = pv.sum() / (pv.sum() + sv.sum()) if (pv.sum() + sv.sum()) > 0 else float("nan")
     # Legend BELOW the plot so it never overlaps the bars or the D-factor line.
@@ -168,6 +182,7 @@ def fig_time_distribution(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
     _bar_labels(ax, bars, "%.0f")
     ax.set_xticks(range(24)); ax.set_xticklabels(HOUR_LABELS, rotation=90, fontsize=6)
     ax.set_ylabel("Average Volume"); ax.set_xlabel("Time")
+    ax.set_ylim(0, (max(vals) if vals else 1) * 1.18 or 1)   # headroom so bar labels aren't clipped
     ax.set_title("Time Distribution")
     fig.tight_layout()
     return fig
@@ -178,10 +193,16 @@ def fig_daily_distribution(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
     seq = m.daily_sequence or [(d, m.daily_totals.get(d, 0)) for d in DOW_NAMES if d in m.daily_totals]
     labels = [d for d, _ in seq]
     vals = [c for _, c in seq]
-    bars = ax.bar(range(len(vals)), vals, color=_BAR)
+    # Weekend bars (Saturday/Sunday) get a distinct color.
+    colors = [_WEEKEND if d in ("Saturday", "Sunday") else _BAR for d in labels]
+    bars = ax.bar(range(len(vals)), vals, color=colors)
     _bar_labels(ax, bars, "%.0f")
     ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
     ax.set_ylabel("Vehicle Counts"); ax.set_xlabel("Days")
+    ax.set_ylim(0, (max(vals) if vals else 1) * 1.12 or 1)
+    from matplotlib.patches import Patch
+    ax.legend(handles=[Patch(color=_BAR, label="Weekday"), Patch(color=_WEEKEND, label="Weekend")],
+              fontsize=8, loc="upper right")
     ax.set_title("Daily Distribution")
     fig.tight_layout()
     return fig
@@ -196,6 +217,12 @@ def fig_speed_distribution(window, m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
     labels = [f"{int(edges[i])}-{int(edges[i+1])}" for i in range(len(edges) - 1)]
     bars = ax.bar(range(len(counts)), counts, color=_BAR)
     _bar_labels(ax, bars, "%.0f")
+    # Red vertical line at the posted speed limit. Bar i spans speeds [5i, 5i+5); the
+    # limit value maps to x = limit/5 - 0.5 (a bin boundary sits at the bar's left edge).
+    if m.speed_limit:
+        ax.axvline(m.speed_limit / 5.0 - 0.5, color="red", lw=1.6,
+                   label=f"Speed limit = {m.speed_limit:g}")
+        ax.legend(fontsize=8)
     ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, rotation=90, fontsize=6)
     ax.set_ylabel("Vehicle Counts"); ax.set_xlabel("Speed (mph)")
     ax.set_title("Speed Distribution")
