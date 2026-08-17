@@ -58,18 +58,40 @@ class DiagnosticReport:
 # --------------------------------------------------------------------------- #
 # Individual checks. Each takes (StudyData, thresholds) -> list[Finding].
 # --------------------------------------------------------------------------- #
+# Day-of-week (Mon=0) set for the standard 3-day mid-week count.
+_STANDARD_TWT = [1, 2, 3]   # Tuesday, Wednesday, Thursday
+
+
 def _check_completeness(sd, th):
     out = []
     n_days = len(sd.day_coverage)
     complete = [c for c in sd.day_coverage if c.coverage >= th.min_hourly_coverage]
-    if sd.selection_note and "Only" in sd.selection_note:
-        out.append(Finding("insufficient_days", "error", sd.selection_note,
-                            {"complete_days": len(complete), "available_days": n_days}))
-    win_days = sd.window[TS].dt.normalize().nunique() if not sd.window.empty else 0
-    if win_days < 7:
-        out.append(Finding("insufficient_days", "warning",
-                            f"Window has {win_days} day(s); a standard study needs 7.",
-                            {"window_days": win_days}))
+    win = sd.window
+    win_dates = sorted(win[TS].dt.normalize().unique()) if not win.empty else []
+    win_days = len(win_dates)
+    win_dows = sorted({int(pd.Timestamp(d).dayofweek) for d in win_dates})
+
+    if win_days == 3 and win_dows == _STANDARD_TWT:
+        # A Tuesday–Thursday count is the standard representative short study — not a
+        # risk. (Length is fine; other checks still judge data quality separately.)
+        out.append(Finding("standard_short_count", "info",
+                           "Standard 3-day count (Tuesday–Thursday).",
+                           {"window_days": 3}))
+    elif win_days == 3:
+        # 3 days that are NOT Tue–Thu are not a valid short count -> high risk.
+        names = ", ".join(pd.Timestamp(d).day_name() for d in win_dates)
+        out.append(Finding("insufficient_days", "error",
+                           f"3-day window is not a standard Tuesday–Thursday count "
+                           f"(covers {names}).",
+                           {"window_days": 3, "days": names}))
+    else:
+        if sd.selection_note and "Only" in sd.selection_note:
+            out.append(Finding("insufficient_days", "error", sd.selection_note,
+                                {"complete_days": len(complete), "available_days": n_days}))
+        if win_days < 7:
+            out.append(Finding("insufficient_days", "warning",
+                                f"Window has {win_days} day(s); a standard study needs 7.",
+                                {"window_days": win_days}))
     for c in sd.day_coverage:
         if c.coverage < th.min_hourly_coverage:
             out.append(Finding("incomplete_day", "info",

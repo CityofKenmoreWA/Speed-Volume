@@ -22,7 +22,7 @@ import sys
 import warnings
 
 warnings.simplefilter("ignore")
-sys.path.insert(0, r"C:\Users\moshanreh\Desktop\Mohammad\Claude\Intersection")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from traffic_diag.config import DEFAULT_BASE
 from traffic_diag.discovery import _LIMIT_RE

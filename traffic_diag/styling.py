@@ -125,6 +125,25 @@ def style_hourly_table(table, limit, speed_col="Weekday 85th %ile"):
     return sty.format(precision=2)
 
 
+def add_col_dividers(styler, before_cols, width="3px", color="#444"):
+    """Draw a thick left border on each named column to separate table groups
+    (e.g. per-day columns from the Average/Overall summary columns).
+
+    Uses a column-class table style (``th.colN, td.colN``) rather than
+    ``set_properties``: the extra class raises its CSS specificity above a plain
+    ``td {border:1px}`` grid rule, so the divider actually wins."""
+    cols = list(styler.data.columns)
+    styles = []
+    for name in before_cols:
+        if name in cols:
+            i = cols.index(name)
+            styles.append({"selector": f"th.col{i}, td.col{i}",
+                           "props": [("border-left", f"{width} solid {color}")]})
+    if styles:
+        styler = styler.set_table_styles(styles, overwrite=False)
+    return styler
+
+
 def style_counts(df, subset=None):
     """Return a pandas Styler coloring numeric cells white->blue per the table range."""
     import pandas as pd

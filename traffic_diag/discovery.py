@@ -49,9 +49,13 @@ class Study:
     def is_compromised(self) -> bool:
         return self.status == "compromised"
 
+    def files(self, suffix_glob: str) -> list[str]:
+        """All files in the folder matching ``*<suffix_glob>``, sorted."""
+        return sorted(glob.glob(os.path.join(self.path, f"*{suffix_glob}")))
+
     def file(self, suffix_glob: str) -> Optional[str]:
         """First file in the folder matching ``*<suffix_glob>`` (e.g. '_Notes.txt')."""
-        hits = sorted(glob.glob(os.path.join(self.path, f"*{suffix_glob}")))
+        hits = self.files(suffix_glob)
         return hits[0] if hits else None
 
     @property
@@ -61,6 +65,84 @@ class Study:
     @property
     def notes_path(self) -> Optional[str]:
         return self.file("_Notes.txt")
+
+    @property
+    def loc_photos(self) -> list[str]:
+        """All installation site photos, sorted. Most sites have one (``*_Loc.*``),
+        but some have several named ``*_Loc1.*`` / ``*_Loc2.*``; return them all so
+        callers can show every photo, not just the first."""
+        return self.files("_Loc*.*") or self.files("_loc*.*")
+
+    @property
+    def loc_photo(self) -> Optional[str]:
+        """The primary installation site photo (first of ``loc_photos``), or None."""
+        photos = self.loc_photos
+        return photos[0] if photos else None
+
+    @property
+    def map_image(self) -> Optional[str]:
+        """The location map (``*_Map.*``, also ``*_Map1.*`` etc.)."""
+        return self.file("_Map*.*") or self.file("_map*.*")
+
+    @property
+    def loc_gps(self) -> Optional[tuple]:
+        """(lat, lon) decimal degrees from the installation photos' EXIF GPS, or None.
+
+        When a site has several photos, use the first one that actually carries GPS
+        tags — in a multi-photo set not every image is necessarily geotagged.
+        """
+        for p in self.loc_photos:
+            gps = photo_gps(p)
+            if gps:
+                return gps
+        return None
+
+    @property
+    def loc_maps_url(self) -> Optional[str]:
+        """A Google Maps link to the installation photo's GPS location, or None."""
+        gps = self.loc_gps
+        return maps_url(*gps) if gps else None
+
+    @property
+    def study_type(self) -> str:
+        """'regular' (routine annual count) or 'ad-hoc' — inferred from the notes."""
+        return classify_study_type(read_notes(self).get("raw", ""))
+
+
+def _dms_to_decimal(dms, ref) -> float:
+    """(deg, min, sec) + hemisphere ref -> signed decimal degrees."""
+    d, m, s = (float(x) for x in dms)
+    val = d + m / 60.0 + s / 3600.0
+    return -val if str(ref).upper() in ("S", "W") else val
+
+
+def photo_gps(path: Optional[str]) -> Optional[tuple]:
+    """(lat, lon) decimal degrees from an image's EXIF GPS tags, or None.
+
+    Returns None when the file is missing, has no GPS block, or can't be read.
+    """
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        from PIL import ExifTags, Image
+        with Image.open(path) as img:
+            gps = img.getexif().get_ifd(ExifTags.IFD.GPSInfo)
+        if not gps:
+            return None
+        t = {ExifTags.GPSTAGS.get(k, k): v for k, v in gps.items()}
+        lat, lat_ref = t.get("GPSLatitude"), t.get("GPSLatitudeRef")
+        lon, lon_ref = t.get("GPSLongitude"), t.get("GPSLongitudeRef")
+        if not (lat and lon and lat_ref and lon_ref):
+            return None
+        return (round(_dms_to_decimal(lat, lat_ref), 6),
+                round(_dms_to_decimal(lon, lon_ref), 6))
+    except Exception:
+        return None
+
+
+def maps_url(lat: float, lon: float) -> str:
+    """Google Maps link that drops a pin at (lat, lon)."""
+    return f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
 
 
 def parse_folder_name(name: str) -> tuple[str, Optional[date]]:
@@ -140,6 +222,32 @@ def find_locations(base: str, year: int, **kwargs) -> list[Study]:
 # A deliberate "Limit: 30" / "Speed Limit: 30" field (colon required) — does NOT
 # match prose like "construction speed limit 25 mph" or "...limit sign from 35 MPH".
 _LIMIT_RE = re.compile(r"(?i)\blimit\s*:\s*(\d{1,2})\b")
+
+# Study-type markers in the notes. Only two explicit markers are trusted:
+# "Annual Count" (the routine recurring program) and "Ad-hoc" (an explicit one-off,
+# however spaced/hyphenated). Notes carrying neither marker are left unclassified
+# (empty) rather than guessed at — a blank field the user can review/fill by hand.
+_ADHOC_RE = re.compile(r"(?i)ad[\s\-]?hoc")
+_ANNUAL_RE = re.compile(r"(?i)annual\s+count")
+
+
+def classify_study_type(text: str) -> str:
+    """Classify a study from its notes text. Returns one of:
+
+    - ``'regular'`` — the routine annual-count program (notes mention "Annual Count").
+    - ``'ad-hoc'``  — an explicit "Ad-hoc" source line.
+    - ``''`` (empty) — no explicit marker, or empty/unreadable notes. Left blank on
+      purpose so unlabeled studies aren't silently lumped into a category.
+
+    An explicit "Ad-hoc" marker wins over "Annual Count" if a note somehow has both.
+    """
+    if not text:
+        return ""
+    if _ADHOC_RE.search(text):
+        return "ad-hoc"
+    if _ANNUAL_RE.search(text):
+        return "regular"
+    return ""
 
 
 def read_notes(study: Study) -> dict:

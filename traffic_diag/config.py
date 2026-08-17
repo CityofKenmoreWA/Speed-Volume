@@ -10,11 +10,45 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Default root of the data tree (overridable via env var or CLI/dashboard input).
+# --------------------------------------------------------------------------- #
+# Paths. Everything the app produces is anchored to the repo root so the project
+# is portable; only the DATA lives outside it. Both are overridable from the bat
+# file (APP_ROOT / TRAFFIC_DATA_BASE) — see run_dashboard.bat.
+# --------------------------------------------------------------------------- #
+
+# Repo root: this file is <root>/traffic_diag/config.py, so the root is two levels
+# up. Override with APP_ROOT to relocate the app without editing code.
+REPO_ROOT = os.environ.get(
+    "APP_ROOT",
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+)
+
+# Where generated reports go. Relative to the repo root by default; overridable.
+REPORTS_DIR = os.environ.get("TRAFFIC_REPORTS_DIR", os.path.join(REPO_ROOT, "reports"))
+
+# Root of the DATA tree (the <year> folders). This is the one directory OUTSIDE the
+# repo; set TRAFFIC_DATA_BASE in the bat file to point elsewhere. The value below
+# is the current default and is used when the env var is not set.
 DEFAULT_BASE = os.environ.get(
     "TRAFFIC_DATA_BASE",
     r"C:\Users\moshanreh\Desktop\Mohammad\Speed and Volume Studies",
 )
+
+# --------------------------------------------------------------------------- #
+# City of Kenmore brand (from the Communications style guide). Used for report
+# letterheads and dashboard chrome — NOT for the data color scales, which stay
+# meaningful (speed green->red, volume white->blue).
+# --------------------------------------------------------------------------- #
+KENMORE_NAVY = "#0E1E37"      # primary dark (headings, rules)
+KENMORE_AMBER = "#FFB300"     # primary accent (the gold line)
+KENMORE_LIGHT = "#E4E6EA"     # primary light (table header fill)
+KENMORE_TEAL = "#016666"      # accent
+KENMORE_OFFWHITE = "#F7F7F8"  # accent background
+KENMORE_OLIVE = "#CCC737"     # accent (logo green family)
+
+# City logo (full-color, transparent) shipped with the app under assets/.
+LOGO_PATH = os.path.join(REPO_ROOT, "assets", "kenmore_logo.png")
+LOGO_WHITE_PATH = os.path.join(REPO_ROOT, "assets", "kenmore_logo_white.png")
 
 # --------------------------------------------------------------------------- #
 # Canonical column names used everywhere downstream of the source adapters.
