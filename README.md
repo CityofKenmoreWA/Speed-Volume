@@ -200,6 +200,64 @@ Each HTML / PDF / Excel report contains:
 - per-direction **hourly matrices** — Volume, 85th-percentile speed, and average speed
   (24h × day, colored, with a thick divider before the summary columns).
 
+## Data-quality diagnostics — flags & severity
+
+Each report and the dashboard carry a **diagnostics** block: individual **findings**
+(with per-check severity) plus an **overall risk badge** derived from them.
+Thresholds live in `config.DiagnosticThresholds` (`DEFAULT_THRESHOLDS`) and are
+tunable in code without touching the checks themselves.
+
+### Findings (all checks)
+
+| Category | Severity | Trigger |
+|---|---|---|
+| `standard_short_count` | info | Window is exactly 3 days AND those days are Tue–Wed–Thu (recognized standard short count — not a risk). |
+| `insufficient_days` | error | 3-day window that is **not** Tue–Thu, **or** the study loader had to shorten the window ("Only …" note). |
+| `insufficient_days` | warning | Selected window has < 7 days (but isn't the 3-day error case). |
+| `incomplete_day` | info | A single day has fewer than `min_hourly_coverage` × 24 hours of data (default 75% → < 18 h). |
+| `data_gap` | warning | One or more gaps > `max_gap_hours` (default **3 h**) that start in the active window (05:00–21:00), or gaps ≥ 6 h at any time. |
+| `no_data` | error | Selected window contains zero vehicles. |
+| `low_volume` | warning | Mean daily volume < `low_volume_per_day` (default **50 veh/day**). |
+| `erratic_volume` | warning | Day-to-day volume swing (max/min) > `max_daily_volume_ratio` (default **3.0×**). |
+| `adt_exceeds_awdt` | warning | ADT > AWDT (weekends busier than weekdays — verify before trusting the weekday D-factor). |
+| `single_direction` | info | Only one travel direction is present in the data. |
+| `direction_imbalance` | warning | Busier direction's share > `max_direction_share` (default **70 %**). |
+| `speed_outliers` | info / warning | Any speeds outside [`speed_min`, `speed_max`] mph (defaults **5**–**90**). **warning** if outliers ≥ 1 % of records, otherwise **info**. |
+| `class_distribution` | warning | Heavy-vehicle share ("Large") > **15 %**. |
+| `class_distribution` | info | All vehicles fall in a single class. |
+| `duplicate_records` | warning | > **40 %** of raw rows are fully-identical (timestamp + speed + class + direction) — possible data doubling. |
+| `unordered_timestamps` | info | Raw timestamps are not monotonically increasing. |
+| `stray_raw_file` | warning | Study folder contains more than one raw file when exactly one is expected. |
+| `technician_note` | warning | `_Notes.txt` contains a quality keyword (snow, ice, imbalance, construction, closure, rain, flood, incomplete, error, parking, check). |
+| `diagnostic_error` | info | A check itself raised an exception (defensive — never sinks the whole report). |
+
+### Overall risk (badge)
+
+Aggregated from the individual severities of all findings:
+
+| Overall risk | Rule |
+|---|---|
+| 🟥 **high** | at least one `error` finding |
+| 🟨 **moderate** | at least one `warning` finding (and no errors) |
+| 🟩 **low** | only `info` findings, or none at all |
+
+Severity order (used for sorting the findings table, worst first):
+`error (3) > warning (2) > info (1) > ok (0)`.
+
+### Threshold defaults (`DiagnosticThresholds`)
+
+| Field | Default | Used by |
+|---|---|---|
+| `min_hourly_coverage` | `0.75` | `incomplete_day` |
+| `low_volume_per_day` | `50` | `low_volume` |
+| `max_direction_share` | `0.70` | `direction_imbalance` |
+| `speed_min` / `speed_max` | `5.0` / `90.0` mph | `speed_outliers` |
+| `max_gap_hours` | `3.0` h | `data_gap` |
+| `max_daily_volume_ratio` | `3.0` | `erratic_volume` |
+
+The 15 % heavy-vehicle share, 40 % duplicate share, and technician-note keyword list
+are baked into the checks themselves (`traffic_diag/diagnostics.py`).
+
 ## Package layout
 
 | Module | Responsibility |
