@@ -137,24 +137,29 @@ for unchanged studies.
 .venv\Scripts\python.exe scripts\build_catalog.py --base "D:\OtherData"
 ```
 
-### `scripts/build_catalog_xy.py` — catalog with projected X/Y (EPSG:2926)
+### `scripts/build_catalog_xy.py` — catalog with lat/lon (WGS84)
 
-Same rows as `build_catalog.py` plus **X, Y** projected from each installation
-photo's GPS to EPSG:2926 (NAD83(HARN) / Washington North, ftUS). Studies whose
-photo has no GPS get empty X/Y. Incremental for both metrics and X/Y.
+Same rows as `build_catalog.py` plus **lat, lon** read straight from each
+installation photo's EXIF GPS (WGS84 / EPSG:4326, rounded to 6 dp ≈ 0.1 m).
+Studies whose photo has no GPS (or has a 0/0 fix) get empty lat/lon.
+Incremental for both metrics and lat/lon — reruns only touch new studies.
+No pyproj / projection dependency.
 
-Flags: `--base PATH` · `--out CSV` (default `<base>\study_catalog_xy.csv`) ·
-`--no-metrics` (X/Y still computed).
+Flags: `--base PATH` · `--out CSV` (default `<base>\study_catalog_latlon.csv`) ·
+`--no-metrics` (lat/lon still read).
 
 ```bash
-# full/incremental XY catalog build
+# full/incremental lat-lon catalog build for ALL studies (all locations × years)
 .venv\Scripts\python.exe scripts\build_catalog_xy.py
 
 # custom output path
-.venv\Scripts\python.exe scripts\build_catalog_xy.py --out "D:\gis\studies_xy.csv"
+.venv\Scripts\python.exe scripts\build_catalog_xy.py --out "D:\gis\studies_latlon.csv"
 
-# X/Y only, skip cached metrics
+# lat/lon only, skip cached metrics (fastest)
 .venv\Scripts\python.exe scripts\build_catalog_xy.py --no-metrics
+
+# point at a different data root
+.venv\Scripts\python.exe scripts\build_catalog_xy.py --base "D:\OtherData"
 ```
 
 ### `tools/backfill_limit_to_notes.py` — copy Excel posted limit into `_Notes.txt`
