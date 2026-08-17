@@ -85,34 +85,94 @@ button, or `python scripts/build_catalog.py`.
 
 ## Command-line interface
 
-See **[docs/CLI.md](docs/CLI.md)** for the full reference. The essentials:
+See **[docs/CLI.md](docs/CLI.md)** for the full reference. Every command below is a
+single-line invocation — copy/paste, edit the values, run.
+
+### `scripts/generate_report.py` — reports, listing, validation, trends
+
+Flags: `--base PATH` · `--year YEAR` · `--location SUBSTR` · `--all` · `--list` ·
+`--validate` · `--trend` · `--out DIR` · `--format {html,excel,pdf,both,all}` (default
+`both` = HTML+Excel; `all` adds PDF) · `--speed-limit N` · `--include-compromised`
+*(no-op today — see docs/CLI.md Caveats)*.
 
 ```bash
 # discover
 .venv\Scripts\python.exe scripts\generate_report.py --list
 .venv\Scripts\python.exe scripts\generate_report.py --year 2026 --list
 
-# one study (substring) -> HTML + Excel in reports\<study>\
+# one study (substring match) -> HTML + Excel in reports\<study>\
 .venv\Scripts\python.exe scripts\generate_report.py --year 2026 --location 61stAv_no_60thAv
+
+# one study, PDF only, forced 35 mph
+.venv\Scripts\python.exe scripts\generate_report.py --location 61stAv_no_60thAv --format pdf --speed-limit 35
 
 # a whole year, all formats (HTML + Excel + PDF)
 .venv\Scripts\python.exe scripts\generate_report.py --year 2026 --all --format all
 
-# PDF for every study, onto another drive
+# PDF for every study, onto another drive (~750 studies — large!)
 .venv\Scripts\python.exe scripts\generate_report.py --all --format pdf --out "D:\pdf_out"
 
-# validate Python vs the legacy Excel reports
+# validate Python vs the legacy Excel reports (one year or all)
+.venv\Scripts\python.exe scripts\generate_report.py --year 2026 --validate
 .venv\Scripts\python.exe scripts\generate_report.py --validate
 
-# (re)build the study catalog
-.venv\Scripts\python.exe scripts\build_catalog.py
-
-# copy each study's Excel speed limit into its _Notes.txt (idempotent; --apply to write)
-.venv\Scripts\python.exe tools\backfill_limit_to_notes.py --apply
+# per-location over-time CSV (all years) — the D-factor-across-years check
+.venv\Scripts\python.exe scripts\generate_report.py --location 73rdAv_so_185thSt --trend
 ```
 
-`--format`: `both` (default) = HTML+Excel; `all` adds PDF. Other flags: `--speed-limit`,
-`--out`, `--trend`.
+### `scripts/build_catalog.py` — study catalog (index + cached metrics)
+
+Flags: `--base PATH` · `--no-metrics` (skip cached avg/85th/ADT/AWDT; structure-only,
+instant). Writes `study_catalog.csv` next to the data. Incremental — reuses metrics
+for unchanged studies.
+
+```bash
+# full/incremental catalog build (writes <base>\study_catalog.csv)
+.venv\Scripts\python.exe scripts\build_catalog.py
+
+# structure-only, no metrics (fastest)
+.venv\Scripts\python.exe scripts\build_catalog.py --no-metrics
+
+# point at a different data root
+.venv\Scripts\python.exe scripts\build_catalog.py --base "D:\OtherData"
+```
+
+### `scripts/build_catalog_xy.py` — catalog with projected X/Y (EPSG:2926)
+
+Same rows as `build_catalog.py` plus **X, Y** projected from each installation
+photo's GPS to EPSG:2926 (NAD83(HARN) / Washington North, ftUS). Studies whose
+photo has no GPS get empty X/Y. Incremental for both metrics and X/Y.
+
+Flags: `--base PATH` · `--out CSV` (default `<base>\study_catalog_xy.csv`) ·
+`--no-metrics` (X/Y still computed).
+
+```bash
+# full/incremental XY catalog build
+.venv\Scripts\python.exe scripts\build_catalog_xy.py
+
+# custom output path
+.venv\Scripts\python.exe scripts\build_catalog_xy.py --out "D:\gis\studies_xy.csv"
+
+# X/Y only, skip cached metrics
+.venv\Scripts\python.exe scripts\build_catalog_xy.py --no-metrics
+```
+
+### `tools/backfill_limit_to_notes.py` — copy Excel posted limit into `_Notes.txt`
+
+Flags: `--base PATH` · `--apply` (write; omit for dry-run preview) ·
+`--no-create` (only append to existing `_Notes.txt`, don't create new ones).
+Idempotent — folders that already have a `Limit:` line are skipped.
+
+```bash
+# preview only (no changes)
+.venv\Scripts\python.exe tools\backfill_limit_to_notes.py
+
+# actually write the Limit: <n> lines
+.venv\Scripts\python.exe tools\backfill_limit_to_notes.py --apply
+
+# only append to existing _Notes.txt files (don't create new ones)
+.venv\Scripts\python.exe tools\backfill_limit_to_notes.py --apply --no-create
+```
 
 ## Streamlit dashboard
 
