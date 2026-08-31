@@ -11,7 +11,7 @@ set "APP_ROOT=%~dp0"
 REM TRAFFIC_DATA_BASE: the actual traffic-study DATA folder (the one holding the
 REM <year> subfolders). This is the only directory outside the app; point it
 REM wherever the data lives. Current default shown below.
-set "TRAFFIC_DATA_BASE=V:\Public Works\Engineering\Traffic Studies\Speed and Volume Studies"
+set "TRAFFIC_DATA_BASE=V:\Public Works\Engineering\TRAFFIC\Traffic Studies\Speed and Volume Studies"
 REM ==========================================================================
 
 cd /d "%APP_ROOT%"
