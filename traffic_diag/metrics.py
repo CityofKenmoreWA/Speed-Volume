@@ -1,13 +1,21 @@
-"""Statistics & tables matching the legacy Excel report (verified to 1e-6).
+"""Statistics & tables for a speed/volume study.
 
-Methodology (see project memory for the full audit):
-  * Average / Median / Max speed   -> all vehicles in the 7-day window.
-  * Percentile speeds              -> WEEKDAY (Mon-Fri) distribution only,
-                                      cumulative P(speed < s), linear interp.
-  * ADT = total / study_days; Average Weekday Traffic = mean of Mon-Fri totals.
+These follow standard practice rather than reproducing the legacy Excel workbook.
+Where the workbook was simply wrong, this module is deliberately different; set
+``config.LEGACY_ANALYSIS`` to reproduce the old numbers for comparison.
+
+Methodology:
+  * Average / Median / Max speed   -> all vehicles in the window.
+  * Percentile speeds              -> the design-window distribution (true Mon-Fri
+                                      by default), cumulative P(speed < s) over a
+                                      grid covering every observed speed, linear
+                                      interpolation between integer speeds.
+  * ADT = total / days in window; Average Weekday Traffic = mean of Mon-Fri totals.
   * AM/PM/overall peak hour -> busiest 60-min (15-min sliding) window of average
-    WEEKDAY (Mon-Fri) volume; each peak carries its average weekday hourly volume.
-  * Hourly table "Weekday Avg" column = mean of Mon-Thu only (legacy Excel quirk).
+    Mon-Fri volume; each peak carries its average weekday hourly volume.
+  * Hourly tables: volume columns average the per-day counts; SPEED columns pool
+    the underlying speeds rather than averaging per-day statistics. "Weekday"
+    means Mon-Fri (the workbook used Mon-Thu and dropped Friday).
 """
 from __future__ import annotations
 
@@ -27,21 +35,56 @@ HOUR_LABELS = [
 ]
 
 
+def _speed_grid(counts_by_speed: dict[int, int], max_speed_bin: int):
+    """Integer speed grid covering EVERY observed speed, with its counts.
+
+    The grid runs 0..max(max_speed_bin, highest observed speed), so no record is
+    left out of the denominator. The old fixed 1..max_speed_bin-1 grid silently
+    dropped speeds of 0 and >= 100 - eight real studies record 100-104 mph, and
+    those vehicles were missing from every percentile while still being counted in
+    max_speed, so the two statistics described different populations.
+    """
+    hi = max(int(max_speed_bin) - 1, max((int(s) for s in counts_by_speed), default=0))
+    speeds = np.arange(0, hi + 1)
+    cnt = np.array([counts_by_speed.get(int(s), 0) for s in speeds], dtype=float)
+    return speeds, cnt
+
+
+def _cumulative_pct(cnt: np.ndarray) -> np.ndarray:
+    """G[i] = 100 * P(speed < speeds[i]), the cumulative used for interpolation."""
+    n = cnt.sum()
+    if n == 0:
+        return np.zeros_like(cnt)
+    return np.concatenate(([0.0], np.cumsum(cnt)[:-1])) / n * 100.0
+
+
+def pct_below(counts_by_speed: dict[int, int], speed: int,
+              max_speed_bin: int = 100) -> Optional[float]:
+    """Percent of vehicles travelling STRICTLY BELOW ``speed`` (None if no data)."""
+    speeds, cnt = _speed_grid(counts_by_speed, max_speed_bin)
+    if cnt.sum() == 0:
+        return None
+    g = _cumulative_pct(cnt)
+    idx = int(np.searchsorted(speeds, speed))
+    if idx >= len(speeds):
+        return 100.0
+    return float(g[idx])
+
+
 def percentile_speed(counts_by_speed: dict[int, int], target_pct: float,
                      max_speed_bin: int = 100) -> Optional[float]:
-    """Speed at ``target_pct`` using the Excel cumulative-interpolation method.
+    """Speed at ``target_pct`` by cumulative interpolation over integer speeds.
 
-    Excel builds F[s] = count(speed < s) on an integer grid s=1..max-1, then
-    G[s] = F[s]/N*100, and for percentile P interpolates between the bracketing
-    integer speeds: ``s + (P - G[s]) / (G[s+1] - G[s])``.
+    Builds F[s] = count(speed < s) on the integer grid, G[s] = F[s]/N*100, then for
+    percentile P interpolates between the bracketing integer speeds:
+    ``s + (P - G[s]) / (G[s+1] - G[s])``. Raw speeds are whole mph, so the integer
+    grid is exact rather than a rounding approximation.
     """
-    speeds = np.arange(1, max_speed_bin)
-    cnt = np.array([counts_by_speed.get(int(s), 0) for s in speeds], dtype=float)
+    speeds, cnt = _speed_grid(counts_by_speed, max_speed_bin)
     n = cnt.sum()
     if n == 0:
         return None
-    cum_lt = np.concatenate(([0.0], np.cumsum(cnt)[:-1]))   # count(speed < s)
-    g = cum_lt / n * 100.0
+    g = _cumulative_pct(cnt)
     # Largest speed s with G[s] STRICTLY < P, then interpolate to the next speed.
     # Strict '<' matches Excel when the cumulative is flat exactly at P (a zero-count
     # speed straddling the percentile); it equals '<=' in every non-tied case.
@@ -106,15 +149,20 @@ def design_dates_for(dates, cfg: AnalysisConfig = DEFAULT_ANALYSIS) -> list:
 
 
 def pace_interval(counts_by_speed: dict[int, int], width: int, max_speed_bin: int = 100):
-    """The ``width``-mph window holding the most vehicles (e.g. 10-MPH pace)."""
-    speeds = np.arange(0, max_speed_bin)
-    cnt = np.array([counts_by_speed.get(int(s), 0) for s in speeds], dtype=float)
-    if cnt.sum() == 0:
-        return None
-    window = np.convolve(cnt, np.ones(width + 1, dtype=float), mode="valid")
-    lo = int(np.argmax(window))
+    """The ``width``-mph window holding the most vehicles (e.g. the 10-MPH pace).
+
+    Covers exactly ``width`` consecutive integer speeds, reported inclusively as
+    ``low``..``high`` (so a 10-mph pace reads e.g. 26-35, ten values). It previously
+    convolved ``width + 1`` bins, making the "10-MPH pace" eleven speeds wide and
+    overstating its share of traffic.
+    """
+    speeds, cnt = _speed_grid(counts_by_speed, max_speed_bin)
     total = cnt.sum()
-    return {"low": lo, "high": lo + width,
+    if total == 0 or width < 1:
+        return None
+    window = np.convolve(cnt, np.ones(width, dtype=float), mode="valid")
+    lo = int(np.argmax(window))
+    return {"low": int(speeds[lo]), "high": int(speeds[lo]) + width - 1,
             "count": int(window[lo]), "pct": float(window[lo] / total * 100.0)}
 
 
@@ -134,6 +182,7 @@ class DirectionMetrics:
     avg_weekday_traffic: float = float("nan")
     design_pct: float = 0.85
     design_speed: float = float("nan")
+    design_dates: list = field(default_factory=list)      # days feeding the percentile distribution
     pct_table: list = field(default_factory=list)        # (pct, speed, excess)
     speed_pct_table: list = field(default_factory=list)   # (speed, percentile)
     pace: Optional[dict] = None
@@ -144,7 +193,7 @@ class DirectionMetrics:
     hourly_volume: Optional[pd.DataFrame] = None          # 24 x (dates + aggregates)
     hourly_speed: Optional[pd.DataFrame] = None           # mean speed 24 x (dates + Average aggregates)
     hourly_p85: Optional[pd.DataFrame] = None             # 85th %ile 24 x (dates + Overall aggregates)
-    hourly_weekday_p85: Optional[pd.Series] = None        # per-hour weekday (first-5-day) 85th
+    hourly_weekday_p85: Optional[pd.Series] = None        # per-hour 85th over the design dates
     am_peak: Optional[tuple] = None                       # (hour_label, avg weekday veh in the 60-min window)
     pm_peak: Optional[tuple] = None
     peak_hour: Optional[tuple] = None                     # overall busiest 60-min window (for trend table)
@@ -176,9 +225,10 @@ def compute_direction_metrics(df: pd.DataFrame, label: str, speed_limit: float,
     defaults to the number of distinct calendar days in ``df``.
 
     ``design_dates`` is the set of dates used for the speed/percentile distribution.
-    The legacy report uses the FIRST ``study_days - 2`` calendar days of the window
-    (Day1..Day5 = the "weekday" portion, position-based, NOT Mon-Fri by name). Pass
-    the shared window dates so per-direction percentiles match the Excel exactly.
+    It defaults to ``design_dates_for(dates, cfg)`` — the true Mon-Fri days in the
+    window, or the legacy "first ``study_days - 2`` calendar days" when
+    ``cfg.percentile_window == "first"``. Callers pass it explicitly so every
+    direction of one study shares the same day set.
     """
     m = DirectionMetrics(label=label, speed_limit=speed_limit, n_days=cfg.study_days,
                          design_pct=cfg.design_percentile)
@@ -186,6 +236,10 @@ def compute_direction_metrics(df: pd.DataFrame, label: str, speed_limit: float,
         m.total = 0
         m.adt = 0.0
         m.max_speed = 0.0
+        # Report the real window length, not the configured default, so an empty
+        # direction does not claim a 7-day study the data never covered.
+        if n_days is not None:
+            m.n_days = n_days
         return m
 
     df = df.copy()
@@ -222,7 +276,11 @@ def compute_direction_metrics(df: pd.DataFrame, label: str, speed_limit: float,
     # may pass design_dates explicitly so all directions share the same set.
     if design_dates is None:
         design_dates = design_dates_for(sorted(df["date"].unique()), cfg)
-    design_df = df[df["date"].isin(pd.to_datetime(list(design_dates)))]
+    # Normalised once and kept on the metrics: the percentile curve is drawn from
+    # this same list, so the curve and the design_speed marker on it cannot drift
+    # apart the way they did while the figure re-derived its own day set.
+    m.design_dates = list(pd.to_datetime(list(design_dates)))
+    design_df = df[df["date"].isin(m.design_dates)]
     cbs = _counts_by_speed(design_df[SPEED]) if not design_df.empty else {}
     pcts = [90, 85, 80, 70, 60, 50, 40, 30, 20, 10]
     m.pct_table = []
@@ -232,15 +290,13 @@ def compute_direction_metrics(df: pd.DataFrame, label: str, speed_limit: float,
         m.pct_table.append((p, sp, excess))
     m.design_speed = percentile_speed(cbs, cfg.design_percentile * 100, cfg.max_speed_bin)
 
-    # Speed -> percentile (inverse table, for the percentile curve).
-    n_wd = sum(cbs.values()) or 1
-    speeds_grid = np.arange(1, cfg.max_speed_bin)
-    cnt = np.array([cbs.get(int(s), 0) for s in speeds_grid], dtype=float)
-    cum_lt = np.concatenate(([0.0], np.cumsum(cnt)[:-1]))
-    g = cum_lt / n_wd * 100.0
+    # Speed -> percentile (inverse table, for the percentile curve). Uses
+    # pct_below so the speed is looked up by VALUE; indexing the cumulative array
+    # positionally used to return the figure for the next integer speed up.
     for sp in [50, 45, 40, 35, 30, 25, 20, 15, 10, 5]:
-        if sp < len(speeds_grid):
-            m.speed_pct_table.append((sp, float(g[sp])))
+        below = pct_below(cbs, sp, cfg.max_speed_bin)
+        if below is not None:
+            m.speed_pct_table.append((sp, below))
 
     m.pace = pace_interval(_counts_by_speed(df[SPEED]), cfg.pace_width, cfg.max_speed_bin)
     m.over_limit_count = int((df[SPEED] > speed_limit).sum())
@@ -253,10 +309,15 @@ def compute_direction_metrics(df: pd.DataFrame, label: str, speed_limit: float,
     spd = (df.pivot_table(index="hour", columns="date", values=SPEED, aggfunc="mean")
              .reindex(index=range(24), columns=ordered_dates))
     m.hourly_volume = _add_aggregates(vol, ordered_dates, cfg)
-    m.hourly_speed = _add_aggregates(spd, ordered_dates, cfg, mean=True)
-    m.hourly_p85 = _hourly_p85_matrix(df, ordered_dates, cfg)
+    # Speed matrices pool the underlying speeds for their summary columns; volume
+    # averages the per-day counts. Averaging per-day mean speeds would weight a day
+    # with one vehicle the same as a day with two hundred.
+    m.hourly_speed = _hourly_stat_matrix(
+        df, ordered_dates, cfg, _mean_speed,
+        summary_labels=("Average", "Weekday Avg", "Weekend Avg"))
+    m.hourly_p85 = _hourly_stat_matrix(df, ordered_dates, cfg, _p85_speed(cfg))
 
-    # Per-hour weekday (first-5-day) design-percentile speed — Excel "Weekday 85th
+    # Per-hour design-percentile speed over ``design_dates`` — the Excel "Weekday 85th
     # Percentile" column: same cumulative-interpolation method, per hour, None if empty.
     p85_by_hour = {}
     for h in range(24):
@@ -278,64 +339,98 @@ def compute_direction_metrics(df: pd.DataFrame, label: str, speed_limit: float,
     return m
 
 
-def _add_aggregates(mat: pd.DataFrame, dates, cfg: AnalysisConfig, mean: bool = False) -> pd.DataFrame:
-    """Append Average / Weekday Avg (Mon-Thu) / Weekend Avg, and order day columns Mon->Sun.
+def _day_labels(dates) -> dict:
+    """Map each date to its column label, keeping labels unique.
 
-    Aggregates are computed from the raw date columns first; the day columns are then
-    relabeled to weekday names and reordered Monday..Sunday so every study reads
-    Mon -> Sun regardless of which weekday data collection started on.
+    Normally one date per weekday, so the label is just "Monday". A window longer
+    than seven days repeats a weekday; those get the date appended ("Monday 01-12")
+    instead of colliding into duplicate columns that break the table.
+    """
+    dows = {d: pd.Timestamp(d).dayofweek for d in dates}
+    seen: dict[int, int] = {}
+    for d in dates:
+        seen[dows[d]] = seen.get(dows[d], 0) + 1
+    return {d: (DOW_NAMES[dows[d]] if seen[dows[d]] == 1
+                else f"{DOW_NAMES[dows[d]]} {pd.Timestamp(d):%m-%d}")
+            for d in dates}
+
+
+def _order_day_columns(out: pd.DataFrame, dates, labels: dict) -> pd.DataFrame:
+    """Reorder the day columns Monday..Sunday (chronologically within a weekday)."""
+    ordered = sorted(dates, key=lambda d: (pd.Timestamp(d).dayofweek, pd.Timestamp(d)))
+    return out[[labels[d] for d in ordered]]
+
+
+def _add_aggregates(mat: pd.DataFrame, dates, cfg: AnalysisConfig) -> pd.DataFrame:
+    """Append Average / Weekday Avg / Weekend Avg to a per-day COUNT matrix.
+
+    Averaging per-day counts is the right aggregate for volume. "Weekday" is
+    ``cfg.hourly_weekdays`` - Mon-Fri by default; the legacy Excel used Mon-Thu,
+    which dropped Friday from every hourly weekday average while the study-level
+    AWDT on the same report used Mon-Fri, so the two disagreed.
     """
     out = mat.copy()
-    dows = {d: d.dayofweek for d in dates}
-    weekday_cols = [d for d in dates if dows[d] in (0, 1, 2, 3)]   # Mon-Thu (Excel quirk)
-    weekend_cols = [d for d in dates if dows[d] in (5, 6)]
+    dows = {d: pd.Timestamp(d).dayofweek for d in dates}
+    weekday_cols = [d for d in dates if dows[d] in cfg.hourly_weekdays]
+    weekend_cols = [d for d in dates if dows[d] in cfg.weekend_indices]
 
     avg = out[list(dates)].mean(axis=1) if len(dates) else np.nan
     wd = out[weekday_cols].mean(axis=1) if weekday_cols else np.nan
     we = out[weekend_cols].mean(axis=1) if weekend_cols else np.nan
 
-    out = out.rename(columns={d: DOW_NAMES[dows[d]] for d in dates})
-    day_order = [DOW_NAMES[i] for i in range(7) if DOW_NAMES[i] in out.columns]
-    out = out[day_order]
+    labels = _day_labels(dates)
+    out = out.rename(columns=labels)
+    out = _order_day_columns(out, dates, labels)
     out["Average"] = avg
     out["Weekday Avg"] = wd
     out["Weekend Avg"] = we
     return out
 
 
-def _hourly_p85_matrix(df: pd.DataFrame, dates, cfg: AnalysisConfig) -> pd.DataFrame:
-    """Per hour x day design-percentile (85th) speed, plus pooled Overall /
-    Weekday Overall / Weekend Overall columns.
+def _mean_speed(speeds: pd.Series) -> float:
+    return float(speeds.mean()) if len(speeds) else np.nan
 
-    A percentile is itself an aggregating statistic, so the summary columns are the
-    percentile of the POOLED speeds for that hour (over all days / Mon-Thu / Sat-Sun) —
-    NOT the mean of the per-day percentiles, which would be meaningless. Day groupings
-    match the mean-speed table (Weekday = Mon-Thu, Weekend = Sat-Sun).
-    """
+
+def _p85_speed(cfg: AnalysisConfig):
+    """A per-hour design-percentile function bound to this config."""
     pct = cfg.design_percentile * 100.0
 
-    def p85(speeds: pd.Series):
+    def _fn(speeds: pd.Series) -> float:
         if len(speeds) == 0:
             return np.nan
         r = percentile_speed(_counts_by_speed(speeds), pct, cfg.max_speed_bin)
         return np.nan if r is None else r
 
-    # Per (hour, day) cell.
-    cell = (df.groupby(["hour", "date"])[SPEED].apply(p85)
-              .unstack("date").reindex(index=range(24), columns=list(dates)))
-    dows = {d: pd.Timestamp(d).dayofweek for d in dates}
-    out = cell.rename(columns={d: DOW_NAMES[dows[d]] for d in dates})
-    day_order = [DOW_NAMES[i] for i in range(7) if DOW_NAMES[i] in out.columns]
-    out = out[day_order]
+    return _fn
 
-    # Pooled per-hour percentile over each day set.
+
+def _hourly_stat_matrix(df: pd.DataFrame, dates, cfg: AnalysisConfig, statfn,
+                        summary_labels=("Overall", "Weekday Overall", "Weekend Overall"),
+                        ) -> pd.DataFrame:
+    """Per hour x day SPEED statistic, plus pooled Overall / Weekday / Weekend columns.
+
+    The summary columns apply ``statfn`` to the POOLED speeds for that hour, never to
+    the per-day results. That is required for a percentile (the mean of per-day 85ths
+    is not an 85th of anything) and equally required for the mean, where a day with
+    one vehicle would otherwise weigh the same as a day with two hundred.
+
+    "Weekday" is ``cfg.hourly_weekdays`` - Mon-Fri by default, Mon-Thu under
+    LEGACY_ANALYSIS. ``summary_labels`` names the three summary columns; each table
+    keeps the names its consumers already look up to place the group divider.
+    """
+    cell = (df.groupby(["hour", "date"])[SPEED].apply(statfn)
+              .unstack("date").reindex(index=range(24), columns=list(dates)))
+    labels = _day_labels(dates)
+    out = _order_day_columns(cell.rename(columns=labels), dates, labels)
+
     def pooled(mask) -> pd.Series:
         sub = df[mask]
         if sub.empty:
             return pd.Series(np.nan, index=range(24))
-        return sub.groupby("hour")[SPEED].apply(p85).reindex(range(24))
+        return sub.groupby("hour")[SPEED].apply(statfn).reindex(range(24))
 
-    out["Overall"] = pooled(df["dow"].notna())
-    out["Weekday Overall"] = pooled(df["dow"].isin((0, 1, 2, 3)))
-    out["Weekend Overall"] = pooled(df["dow"].isin((5, 6)))
+    all_lbl, wd_lbl, we_lbl = summary_labels
+    out[all_lbl] = pooled(df["dow"].notna())
+    out[wd_lbl] = pooled(df["dow"].isin(cfg.hourly_weekdays))
+    out[we_lbl] = pooled(df["dow"].isin(cfg.weekend_indices))
     return out

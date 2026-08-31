@@ -206,7 +206,7 @@ def load_study(study: Study, spec: Optional[SourceSpec] = None,
     raw = raw.sort_values(TS).reset_index(drop=True)
 
     notes = read_notes(study)
-    # Precedence: explicit input -> existing Excel -> Notes "Limit:" -> 25 default.
+    # Precedence lives in resolve_speed_limit: input -> Notes "Limit:" -> Excel -> default.
     speed_limit, speed_limit_source = resolve_speed_limit(study, cfg, explicit=speed_limit,
                                                           notes=notes)
 

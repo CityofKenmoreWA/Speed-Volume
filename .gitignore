@@ -15,10 +15,28 @@ validate_results.csv
 ~$*.docx
 mutcd*.pdf
 
-# Leftover from restructuring into Speed&Volume/ (safety net if it can't be deleted)
-/app/
+# Empty leftover from restructuring into Speed&Volume/. This used to be "/app/",
+# which ignored the whole dashboard directory - app/streamlit_app.py only stayed in
+# the repo because it was already tracked, and any NEW file under app/ would have
+# been silently dropped.
+/app/app/
 
 # OS / editor cruft
 .DS_Store
 Thumbs.db
 *.log
+
+# Deploy bundle. The portable Python runtime (~366 MB) and the packaged zip
+# (~113 MB) are build artifacts - rebuild them, don't version them. The files that
+# actually DEFINE the bundle (the launcher, the server installer, its README and
+# Streamlit config) are tracked.
+deploy/*.zip
+deploy/KenmoreTrafficDashboard/python/
+deploy/KenmoreTrafficDashboard/logs/
+deploy/KenmoreTrafficDashboard/cache/
+
+# ...and these are just synced copies of the repo source above, not separate code.
+deploy/KenmoreTrafficDashboard/traffic_diag/
+deploy/KenmoreTrafficDashboard/app/
+deploy/KenmoreTrafficDashboard/scripts/
+deploy/KenmoreTrafficDashboard/assets/
