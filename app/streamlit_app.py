@@ -2,9 +2,9 @@
 
 Run:  streamlit run app/streamlit_app.py
 
-Pick a year (auto-discovered), then a location (auto-populated), run the report,
-and view statistics, tables, figures, and diagnostics — with HTML/Excel download.
-New years/locations on disk appear automatically.
+Pick a location (from the study catalog), then a year available for it, run the
+report, and view statistics, tables, figures, and diagnostics — with HTML / Excel /
+PDF download. New years/locations appear once the catalog has been refreshed.
 """
 from __future__ import annotations
 
@@ -18,10 +18,10 @@ import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from traffic_diag.catalog import (load_or_build_catalog, refresh_catalog,
+from traffic_diag.catalog import (catalog_path, load_or_build_catalog,
                                   study_from_row)
 from traffic_diag.config import (DEFAULT_BASE, KENMORE_AMBER, KENMORE_NAVY,
-                                 KENMORE_TEAL, LOGO_PATH, LOGO_WHITE_PATH)
+                                 LOGO_PATH, LOGO_WHITE_PATH)
 from traffic_diag.discovery import maps_url
 from traffic_diag.figures import build_figures, fig_dfactor
 from traffic_diag.metrics import HOUR_LABELS
@@ -36,6 +36,41 @@ from traffic_diag.trends import over_time_table, fig_trend
 @st.cache_data(show_spinner=False)
 def _over_time(base, location, direction):
     return over_time_table(base, location, direction=direction)
+
+
+# --------------------------------------------------------------------------- #
+# Export artifacts.
+#
+# Streamlit reruns this whole script on every widget interaction — including the
+# direction radio — and none of the three exports depends on that selection (each
+# one always covers every direction). Uncached, a single WB/EB toggle spent ~8s
+# rebuilding byte-identical reports.
+#
+# The `_result` parameter is underscore-prefixed so Streamlit skips hashing it
+# (StudyResult is not hashable) and keys the cache on study_id + speed_limit —
+# the only two inputs that change what a report contains. Re-running the same
+# study with the same limit therefore reuses the cached bytes.
+# --------------------------------------------------------------------------- #
+@st.cache_data(show_spinner="Building HTML report…")
+def _export_html(_result, study_id: str, speed_limit: float) -> str:
+    return build_html_report(_result)
+
+
+@st.cache_data(show_spinner="Building Excel report…")
+def _export_xlsx(_result, study_id: str, speed_limit: float) -> bytes:
+    path = os.path.join(tempfile.gettempdir(), f"{study_id}_report.xlsx")
+    write_excel_report(_result, path)
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+@st.cache_data(show_spinner="Building PDF report…")
+def _export_pdf(_result, study_id: str, speed_limit: float) -> bytes:
+    path = os.path.join(tempfile.gettempdir(), f"{study_id}_report.pdf")
+    write_pdf_report(_result, path)
+    with open(path, "rb") as fh:
+        return fh.read()
+
 
 st.set_page_config(page_title="Kenmore Traffic Study Diagnostics", layout="wide")
 _RISK_COLOR = {"high": "#d9534f", "moderate": "#f0ad4e", "low": "#5cb85c"}
@@ -84,16 +119,28 @@ def show_footer():
         unsafe_allow_html=True
     )
 
+def _catalog_stamp(base) -> float:
+    """Mtime of the catalog CSV, or 0.0 if it is not there yet.
+
+    This is the cache key below. The catalog is refreshed out of band by the
+    scheduled task (scripts/build_catalog.py), so keying on the file's mtime is
+    what lets a dashboard that is already open pick up a refresh on its next
+    rerun — no Rebuild button, no restart.
+    """
+    try:
+        return os.path.getmtime(catalog_path(base))
+    except OSError:
+        return 0.0
+
+
 @st.cache_data(show_spinner=False)
-def _catalog(base):
-    """The study catalog (all locations x years). Read from the CSV built at launch
-    by run_dashboard.bat; built in memory if the CSV is missing."""
+def _catalog(base, stamp: float):
+    """The study catalog (all locations x years), read from the CSV on the share.
+
+    ``stamp`` is not used in the body — it is the cache key. A new mtime means a
+    new entry, so the refreshed catalog is read instead of the stale one.
+    """
     return load_or_build_catalog(base, rebuild=False)
-
-
-def _rebuild_catalog(base):
-    # Incremental: reuse metrics for known studies, compute only new ones.
-    return refresh_catalog(base)
 
 
 @st.cache_data(show_spinner=False)
@@ -137,18 +184,20 @@ show_header()
 
 with st.sidebar:
     st.header("Select study")
-    base = st.text_input("Data folder", value=DEFAULT_BASE)
-    if not os.path.isdir(base):
-        st.error("Folder not found."); st.stop()
 
-    cat = _catalog(base)
-    if st.button("🔄 Rebuild catalog", width="stretch",
-                 help="Rescan every folder and refresh the location/year list."):
-        _catalog.clear()
-        cat = _rebuild_catalog(base)
-        st.success(f"Catalog rebuilt: {len(cat)} studies.")
+    # The data folder is fixed by deployment (TRAFFIC_DATA_BASE) — not user input.
+    # The catalog behind it is refreshed out of band by the scheduled task, so the
+    # dashboard is read-only with respect to the share.
+    base = DEFAULT_BASE
+    if not os.path.isdir(base):
+        st.error(f"Study folder is not reachable:  \n`{base}`  \n\n"
+                 "Check that the server can see the share, then restart the app.")
+        show_footer(); st.stop()
+
+    cat = _catalog(base, _catalog_stamp(base))
     if cat is None or cat.empty:
-        st.error("No studies found under this folder."); st.stop()
+        st.error("No studies found in the study folder.")
+        show_footer(); st.stop()
 
     # Pick a LOCATION first, then the YEAR available for that location.
     locations = sorted(cat["location"].unique())
@@ -362,25 +411,20 @@ with tab_trend:
                            f"(range {dvals.max()-dvals.min():.2f}). Large swings may indicate "
                            f"a data/placement issue.")
 
-# Downloads
+# Downloads. Built once per study (see the cached _export_* helpers) so changing
+# the direction selection above does not regenerate them.
 st.markdown("### Export")
-html = build_html_report(result)
+sid, slim = sd.study.study_id, float(sd.speed_limit)
 d1, d2, d3 = st.columns(3)
-d1.download_button("⬇ HTML report", html,
-                   file_name=f"{sd.study.study_id}_report.html", mime="text/html",
+d1.download_button("⬇ HTML report", _export_html(result, sid, slim),
+                   file_name=f"{sid}_report.html", mime="text/html",
                    width="stretch")
-tmp_xlsx = os.path.join(tempfile.gettempdir(), f"{sd.study.study_id}_report.xlsx")
-write_excel_report(result, tmp_xlsx)
-with open(tmp_xlsx, "rb") as fh:
-    d2.download_button("⬇ Excel report", fh.read(),
-                       file_name=f"{sd.study.study_id}_report.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       width="stretch")
-tmp_pdf = os.path.join(tempfile.gettempdir(), f"{sd.study.study_id}_report.pdf")
-write_pdf_report(result, tmp_pdf)
-with open(tmp_pdf, "rb") as fh:
-    d3.download_button("⬇ PDF report", fh.read(),
-                       file_name=f"{sd.study.study_id}_report.pdf", mime="application/pdf",
-                       width="stretch")
+d2.download_button("⬇ Excel report", _export_xlsx(result, sid, slim),
+                   file_name=f"{sid}_report.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                   width="stretch")
+d3.download_button("⬇ PDF report", _export_pdf(result, sid, slim),
+                   file_name=f"{sid}_report.pdf", mime="application/pdf",
+                   width="stretch")
     
 show_footer()

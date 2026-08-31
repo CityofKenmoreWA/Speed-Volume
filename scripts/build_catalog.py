@@ -1,20 +1,27 @@
-"""Build (or refresh) the study catalog table before the dashboard opens.
+"""Build (or refresh) the study catalog table.
 
-Scans every year folder under the data base once and writes ``study_catalog.csv``
-next to the data tree. Run automatically by run_dashboard.bat; can also be run
-by hand:
+Scans every year folder under the data base and writes ``study_catalog.csv`` next
+to the data tree. This is what normally writes to the share; the dashboard only
+reads the CSV — except that it writes a structure-only catalog if the file is
+missing altogether, so this script should be what creates it first. Run it from
+the scheduled task (``KenmoreTrafficDashboard.bat refresh``), or by hand:
 
-    python scripts/build_catalog.py [--base <data folder>]
+    python scripts/build_catalog.py [--base <data folder>] [--no-metrics]
+
+Exit codes: 0 refreshed · 1 data folder unreachable · 2 could not write the CSV.
+A non-zero exit is what lets the scheduled task surface a stale catalog instead
+of failing silently.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import sys
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from traffic_diag.catalog import catalog_path, read_catalog, refresh_catalog, write_catalog
+from traffic_diag.catalog import catalog_path, refresh_catalog
 from traffic_diag.config import DEFAULT_BASE
 
 
@@ -26,28 +33,29 @@ def main() -> int:
                     help="skip computing avg/85th/ADT/AWDT (structure only)")
     args = ap.parse_args()
 
+    stamp = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
     if not os.path.isdir(args.base):
-        print(f"[catalog] data folder not found: {args.base}", file=sys.stderr)
+        print(f"[{stamp}] data folder not reachable: {args.base}", file=sys.stderr)
         return 1
 
-    print(f"[catalog] scanning {args.base} …")
+    print(f"[{stamp}] scanning {args.base} ...")
     # Refresh incrementally: reuse metrics for studies already in the CSV, compute
     # only new ones.
     stats: dict = {}
-    df = refresh_catalog(args.base, compute=not args.no_metrics, stats=stats)
+    df, wrote = refresh_catalog(args.base, compute=not args.no_metrics, stats=stats)
     out = catalog_path(args.base)
-    wrote = read_catalog(args.base) is not None and os.path.exists(out)
     n_locs = df["location"].nunique() if len(df) else 0
     n_years = df["year"].nunique() if len(df) else 0
-    print(f"[catalog] {stats.get('total', len(df))} studies · {n_locs} locations · "
-          f"{n_years} years  (metrics: {stats.get('computed', 0)} new, "
-          f"{stats.get('reused', 0)} reused)")
+    print(f"[{stamp}] {stats.get('total', len(df))} studies | {n_locs} locations | "
+          f"{n_years} years  (metrics: {stats.get('computed', 0)} new/changed, "
+          f"{stats.get('reused', 0)} unchanged)")
     if wrote:
-        print(f"[catalog] -> {out}")
-    else:
-        print(f"[catalog] could not write CSV to {out} (open in Excel / read-only?); "
-              f"the app will build it in memory", file=sys.stderr)
-    return 0
+        print(f"[{stamp}] wrote {out}")
+        return 0
+    print(f"[{stamp}] COULD NOT WRITE {out} - the catalog is now stale. "
+          f"Check that the account running this task has write access to the file "
+          f"(and that it is not open in Excel).", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

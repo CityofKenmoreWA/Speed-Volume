@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from .config import (CLASS, DIRECTION, SPEED, TS, DiagnosticThresholds,
-                     DEFAULT_THRESHOLDS, SOURCES)
+from .config import (CLASS, DIRECTION, SPEED, TS, DEFAULT_ANALYSIS,
+                     DiagnosticThresholds, DEFAULT_THRESHOLDS, SOURCES)
 from .sources import list_raw_files
 
 if TYPE_CHECKING:
@@ -165,7 +165,7 @@ def _check_adt_vs_awdt(sd, th):
     dates = w[TS].dt.normalize()
     per_date = w.groupby(dates).size()
     adt = float(per_date.mean()) if len(per_date) else 0.0
-    wk = w[w[TS].dt.dayofweek <= 4]
+    wk = w[w[TS].dt.dayofweek.isin(DEFAULT_ANALYSIS.weekday_indices)]
     if wk.empty:
         return out
     awdt = float(wk.groupby(wk[TS].dt.normalize()).size().mean())

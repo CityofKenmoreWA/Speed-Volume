@@ -7,12 +7,20 @@ reads that table to drive a **Location -> Year** picker without re-walking the
 disk on every interaction.
 
 Metrics are computed **incrementally**: a refresh keeps the metrics already stored
-for studies whose folder path is unchanged, and only runs the (relatively costly)
-per-study processing for NEW studies. So the first refresh computes everything
-once; later refreshes only touch newly-added folders.
+for a study whose path AND fingerprint are unchanged, and only runs the (relatively
+costly) per-study processing for studies that are new or whose data files have
+changed. So the first refresh computes everything once; later refreshes only touch
+what actually moved.
+
+The fingerprint is what makes an unattended refresh trustworthy. Matching on path
+alone would reuse stale metrics forever whenever a study was corrected in place —
+a re-pulled ``_Raw.csv``, a ``Limit:`` added to ``_Notes.txt``, a replaced
+``_Report.xlsx``. Those edits leave the path identical, so the path is not enough
+to tell "already computed" from "computed from older data".
 """
 from __future__ import annotations
 
+import glob
 import os
 from datetime import date
 from typing import Optional
@@ -24,10 +32,35 @@ from .pipeline import process_study
 
 CATALOG_NAME = "study_catalog.csv"
 STRUCT_COLUMNS = ["location", "year", "install_date", "study_id",
-                  "status", "source_name", "study_type", "path"]
+                  "status", "source_name", "study_type", "path", "fingerprint"]
+# Files whose content decides a study's metrics; the fingerprint covers these.
+FINGERPRINT_GLOBS = ("*_Raw.csv", "*_Notes.txt", "*_Report.xlsx")
 # Headline metrics (Merged direction), cached per study.
 METRIC_COLUMNS = ["avg_speed", "p85_speed", "adt", "awdt"]
 CATALOG_COLUMNS = STRUCT_COLUMNS + METRIC_COLUMNS
+
+
+def study_fingerprint(path: str) -> str:
+    """A cheap change token for one study folder: newest mtime + total size of its
+    data files, as "<mtime>:<bytes>:<count>".
+
+    Metadata only — no file contents are read, so a full pass over ~770 studies
+    costs about five seconds over the share. Returns "" if the folder cannot be
+    read, which is treated as "changed" and simply recomputes.
+    """
+    newest = 0.0
+    total = 0
+    count = 0
+    try:
+        for pattern in FINGERPRINT_GLOBS:
+            for f in glob.glob(os.path.join(path, pattern)):
+                st = os.stat(f)
+                newest = max(newest, st.st_mtime)
+                total += st.st_size
+                count += 1
+    except OSError:
+        return ""
+    return f"{newest:.0f}:{total}:{count}" if count else ""
 
 
 def _struct_row(s: Study) -> dict:
@@ -40,6 +73,7 @@ def _struct_row(s: Study) -> dict:
         "source_name": s.source_name,
         "study_type": s.study_type,
         "path": s.path,
+        "fingerprint": study_fingerprint(s.path),
     }
 
 
@@ -59,6 +93,29 @@ def _study_metrics(study: Study) -> dict:
     }
 
 
+def _cache_key(path: str) -> str:
+    r"""Identify a study by its place in the tree, independent of how the tree was
+    reached.
+
+    The same share is addressed by more than one name: the mapped drive
+    (``V:\...``) from a desktop, and the UNC path (``\\server\share\...``) from a
+    service, because drive mappings do not exist for a service account. Keying the
+    cache on the absolute path would make each form invalidate the other's entries
+    — every refresh would recompute all ~770 studies, and a 5-minute schedule
+    would never converge.
+
+    ``os.path.relpath`` cannot bridge the two (it raises ValueError across
+    different mounts), so the key is anchored on the ``<year>`` folder instead and
+    keeps everything below it. That covers both tree shapes discovery supports:
+    ``<year>/<study>`` and ``<year>/<special subdir>/<study>``.
+    """
+    parts = [p for p in str(path).replace("\\", "/").split("/") if p]
+    for i in range(len(parts) - 1, -1, -1):
+        if len(parts[i]) == 4 and parts[i].isdigit():
+            return "/".join(parts[i:]).lower()
+    return "/".join(parts[-2:]).lower()      # unexpected layout: fall back to the tail
+
+
 def _has_metrics(row: dict) -> bool:
     """True if a cached row already carries all metric values."""
     for c in METRIC_COLUMNS:
@@ -73,22 +130,32 @@ def build_catalog(base: str, source_name: str = "radar",
                   compute: bool = True, stats: Optional[dict] = None) -> pd.DataFrame:
     """Scan every year under ``base`` and return one row per study.
 
-    ``previous`` (an existing catalog DataFrame): rows whose ``path`` already
-    appears there — and already have metrics — reuse those metrics unchanged;
-    only NEW studies are processed. ``compute=False`` skips metric computation
-    for new studies (structure only). ``stats`` is populated with counts.
+    ``previous`` (an existing catalog DataFrame): a row reuses its stored metrics
+    when its position under ``base`` appears there, it already has metrics, AND
+    its fingerprint still matches — so new studies and edited studies are both recomputed, and
+    everything else is left alone. ``compute=False`` skips metric computation for
+    those (structure only). ``stats`` is populated with counts.
+
+    A catalog written before fingerprints existed has none stored, so every row
+    looks changed and the first refresh recomputes the whole tree once. That is
+    intentional: it is also the pass that repairs any metrics that had gone stale
+    under the old path-only rule.
     """
     prev: dict[str, dict] = {}
     if previous is not None and not previous.empty and "path" in previous.columns:
         for r in previous.to_dict("records"):
-            prev[str(r.get("path"))] = r
+            prev[_cache_key(r.get("path"))] = r
 
     n_reused = n_computed = 0
     rows = []
     for s in find_studies(base, source_name=source_name):
         row = _struct_row(s)
-        cached = prev.get(s.path)
-        if cached is not None and _has_metrics(cached):
+        cached = prev.get(_cache_key(s.path))
+        fresh = (cached is not None
+                 and _has_metrics(cached)
+                 and str(cached.get("fingerprint") or "") == row["fingerprint"]
+                 and row["fingerprint"] != "")
+        if fresh:
             row.update({c: cached.get(c) for c in METRIC_COLUMNS})
             n_reused += 1
         elif compute:
@@ -153,12 +220,13 @@ def read_catalog(base: str) -> Optional[pd.DataFrame]:
 
 
 def refresh_catalog(base: str, compute: bool = True,
-                    stats: Optional[dict] = None) -> pd.DataFrame:
+                    stats: Optional[dict] = None) -> tuple:
     """Rescan the disk, reusing metrics from the existing CSV for unchanged studies,
-    computing only new ones, then rewrite the CSV."""
+    computing only new ones, then rewrite the CSV. Returns ``(df, path|None)`` —
+    ``None`` means the write failed and whatever is on the share is now stale, which
+    is what lets the scheduled task exit non-zero instead of reporting success."""
     df = build_catalog(base, previous=read_catalog(base), compute=compute, stats=stats)
-    write_catalog(df, base)
-    return df
+    return df, write_catalog(df, base)
 
 
 def load_or_build_catalog(base: str, rebuild: bool = False) -> pd.DataFrame:
@@ -175,8 +243,8 @@ def load_or_build_catalog(base: str, rebuild: bool = False) -> pd.DataFrame:
         cached = read_catalog(base)
         if cached is not None:
             return cached
-        return refresh_catalog(base, compute=False)   # structure only → no page-load hang
-    return refresh_catalog(base, compute=True)
+        return refresh_catalog(base, compute=False)[0]   # structure only → no page-load hang
+    return refresh_catalog(base, compute=True)[0]
 
 
 def study_from_row(row) -> Study:

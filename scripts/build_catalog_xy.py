@@ -36,12 +36,12 @@ def main() -> int:
         return 1
 
     out = args.out or catalog_xy_path(args.base)
-    print(f"[catalog-latlon] scanning {args.base} … reading photo GPS (WGS84)")
+    print(f"[catalog-latlon] scanning {args.base} ... reading photo GPS (WGS84)")
     stats: dict = {}
     df, written = refresh_catalog_xy(args.base, out=out, compute=not args.no_metrics, stats=stats)
     n_locs = df["location"].nunique() if len(df) else 0
     n_years = df["year"].nunique() if len(df) else 0
-    print(f"[catalog-latlon] {stats.get('total', len(df))} studies · {n_locs} locations · "
+    print(f"[catalog-latlon] {stats.get('total', len(df))} studies | {n_locs} locations | "
           f"{n_years} years")
     print(f"[catalog-latlon]   metrics: {stats.get('computed', 0)} new, "
           f"{stats.get('reused', 0)} reused")

@@ -1,0 +1,27 @@
+# Server settings for the always-on deployment.
+[server]
+# Loopback by default, so double-clicking the .bat only ever serves this machine.
+# The server install (Setup-Server.ps1 -> "serve" mode) overrides this on the
+# command line with DASH_BIND, and Windows Firewall is what limits who can reach
+# it. Do not widen this value here.
+address = "127.0.0.1"
+port = 8501
+headless = true
+# Leave XSRF protection on.
+enableXsrfProtection = true
+# The app takes no uploads; keep the limit small.
+maxUploadSize = 1
+# No source watching on a server — the files do not change while it runs.
+fileWatcherType = "none"
+
+[browser]
+# No telemetry off this host.
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = false
+
+[theme]
+base = "light"
+primaryColor = "#FFB300"

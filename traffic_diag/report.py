@@ -16,10 +16,10 @@ from datetime import datetime
 from jinja2 import Template
 
 from . import styling
-from .config import (DIRECTION, AnalysisConfig, DEFAULT_ANALYSIS, KENMORE_AMBER,
-                     KENMORE_NAVY, KENMORE_TEAL, LOGO_PATH)
+from .config import (DIRECTION, FIGURE_DPI, AnalysisConfig, DEFAULT_ANALYSIS,
+                     KENMORE_AMBER, KENMORE_NAVY, KENMORE_TEAL, LOGO_PATH)
 from .discovery import maps_url
-from .figures import build_figures, fig_dfactor, save_figures
+from .figures import build_figures, fig_dfactor
 from .metrics import HOUR_LABELS
 
 # Summary split into a Speed box and a Volume box (per supervisor).
@@ -104,7 +104,7 @@ def direction_display(notes) -> dict:
 
 def _fig_to_b64(fig) -> str:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=FIGURE_DPI, bbox_inches="tight")
     buf.seek(0)
     return base64.b64encode(buf.read()).decode("ascii")
 
@@ -327,6 +327,52 @@ def write_html_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS)
 
 
 # --------------------------------------------------------------------------- #
+# PDF figure sizing
+#
+# Figures used to be forced into a fixed avail_w x (avail_w * 0.5) box, which
+# stretched every chart whose natural aspect ratio was not exactly 0.5 — the
+# 9x4 charts came out 14% too tall and the 9x5.4 D-factor 17% too short. That
+# distortion, not the raster resolution, is what read as "low quality".
+#
+# Now each figure is rendered onto a canvas PDF_FIG_WIDTH_FRAC as wide as the
+# text column and placed at its true aspect ratio. Shrinking the matplotlib
+# canvas — rather than scaling a page-width image down — is what makes a
+# smaller figure a sharper one: font sizes are in points, so a 6.2in canvas
+# placed at its trimmed ~6.1in renders labels at their full nominal size (~6pt
+# ticks instead of the ~4.9pt you got squeezing a 9in canvas into 7.3in), and
+# the placed image lands at exactly FIGURE_DPI on paper.
+# --------------------------------------------------------------------------- #
+PDF_FIG_WIDTH_FRAC = 0.85
+
+
+def _pdf_figure(fig, path, avail_w, dpi=FIGURE_DPI):
+    """Render one matplotlib figure for the PDF; return a centred reportlab Image.
+
+    The canvas is resized to PDF_FIG_WIDTH_FRAC of the text column (keeping its
+    own proportions), then placed 1:1 — width in inches = pixels / dpi — so the
+    image is never rescaled on the page and never distorted.
+    """
+    from reportlab.lib.units import inch
+    from reportlab.lib.utils import ImageReader
+    from reportlab.platypus import Image
+
+    target_in = avail_w * PDF_FIG_WIDTH_FRAC / inch
+    w0, h0 = fig.get_size_inches()
+    fig.set_size_inches(target_in, h0 * target_in / w0)
+    fig.tight_layout()
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+
+    # bbox_inches="tight" trims whitespace, so read the real pixel size back and
+    # place at 1:1. The min() is a guard for a figure that trims wider than the
+    # column (it never should at 0.85) — aspect is preserved either way.
+    px_w, px_h = ImageReader(path).getSize()
+    w_pt = min(px_w / dpi * inch, avail_w)
+    img = Image(path, width=w_pt, height=w_pt * px_h / px_w)
+    img.hAlign = "CENTER"
+    return img
+
+
+# --------------------------------------------------------------------------- #
 # PDF (reportlab)
 # --------------------------------------------------------------------------- #
 def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
@@ -438,9 +484,8 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
         dnames = {"Incoming": sd.notes.get("incoming"), "Outgoing": sd.notes.get("outgoing")}
         dfig = fig_dfactor(result.metrics, cfg, dnames)
         dpath = os.path.join(tmpdir, "dfactor.png")
-        dfig.savefig(dpath, dpi=120, bbox_inches="tight"); plt.close(dfig)
-        flow += [Spacer(1, 8), Paragraph("Directional Split — D-Factor", h2),
-                 Image(dpath, width=avail_w, height=avail_w * 0.5)]
+        dimg = _pdf_figure(dfig, dpath, avail_w); plt.close(dfig)
+        flow += [Spacer(1, 8), Paragraph("Directional Split — D-Factor", h2), dimg]
         for label in directions:
             m = result.metrics[label]
             sub = direction_window(sd.window, label)
@@ -448,12 +493,15 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
                      Paragraph(_recap(m), small), Spacer(1, 4)]
             flow += [_pct_class_combo(m, avail_w, h2, small, sd.speed_limit)]
             figs = build_figures(sub, m, cfg)
-            paths = save_figures(figs, tmpdir, prefix=f"{label}_")
+            # Resize-and-place each figure individually (not via save_figures) so
+            # the PDF gets its own smaller canvas without affecting the HTML or
+            # dashboard renders, which keep the full-size figures.
+            for name in _FIG_ORDER:
+                if name in figs:
+                    fpath = os.path.join(tmpdir, f"{label}_{name}.png")
+                    flow += [_pdf_figure(figs[name], fpath, avail_w), Spacer(1, 6)]
             for f in figs.values():
                 plt.close(f)
-            for name in _FIG_ORDER:
-                if name in paths:
-                    flow += [Image(paths[name], width=avail_w, height=avail_w * 0.5), Spacer(1, 6)]
             for title, mat, kind, grp in _hourly_specs(m):
                 if mat is None:
                     continue

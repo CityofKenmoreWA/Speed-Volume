@@ -35,6 +35,16 @@ DEFAULT_BASE = os.environ.get(
 )
 
 # --------------------------------------------------------------------------- #
+# Figure raster resolution. Every PNG the app writes — standalone files, the
+# base64 images embedded in the HTML report, the images placed into the PDF, and
+# the Streamlit renders — goes out at this DPI, so print output stays sharp.
+# Figures are sized in inches (figsize), so DPI changes pixel count only: layout,
+# font sizes and proportions are identical at any value. Overridable for a quick
+# low-res preview run (e.g. TRAFFIC_FIGURE_DPI=100).
+# --------------------------------------------------------------------------- #
+FIGURE_DPI = int(os.environ.get("TRAFFIC_FIGURE_DPI", "250"))
+
+# --------------------------------------------------------------------------- #
 # City of Kenmore brand (from the Communications style guide). Used for report
 # letterheads and dashboard chrome — NOT for the data color scales, which stay
 # meaningful (speed green->red, volume white->blue).
@@ -148,6 +158,13 @@ class AnalysisConfig:
     max_speed_bin: int = 100
     # Weekday set (Mon=0 .. Sun=6) used for "weekday" averages.
     weekday_indices: tuple[int, ...] = (0, 1, 2, 3, 4)
+    # Weekend set, used for the "Weekend" summary columns.
+    weekend_indices: tuple[int, ...] = (5, 6)
+    # Day set behind the hourly tables' "Weekday" summary columns. None = use
+    # weekday_indices (Mon-Fri, correct). The legacy Excel used Mon-Thu only, which
+    # silently dropped Friday from every hourly weekday average; LEGACY_ANALYSIS
+    # restores that so the old workbooks can still be reproduced on demand.
+    hourly_weekday_indices: Optional[tuple[int, ...]] = None
     # Which days feed the speed/percentile distribution:
     #   "weekday" — true Mon-Fri days in the window (corrected; default)
     #   "first"   — the legacy Excel behavior: the first (study_days - 2) calendar
@@ -156,10 +173,20 @@ class AnalysisConfig:
     # not start on Monday that wrongly pulls weekend days into the weekday 85th.
     percentile_window: str = "weekday"
 
+    @property
+    def hourly_weekdays(self) -> tuple:
+        """Days behind the hourly "Weekday" columns (Mon-Fri unless overridden)."""
+        if self.hourly_weekday_indices is None:
+            return self.weekday_indices
+        return self.hourly_weekday_indices
+
 
 DEFAULT_ANALYSIS = AnalysisConfig()
-# Legacy reproduction (matches the original Excel exactly, incl. its quirk).
-LEGACY_ANALYSIS = AnalysisConfig(percentile_window="first")
+# Legacy reproduction: matches the original Excel exactly, quirks included - the
+# first-5-calendar-days "weekday" percentile window AND the Mon-Thu hourly weekday
+# averages. For comparing against archived workbooks, not for new reporting.
+LEGACY_ANALYSIS = AnalysisConfig(percentile_window="first",
+                                 hourly_weekday_indices=(0, 1, 2, 3))
 
 
 @dataclass(frozen=True)

@@ -14,10 +14,19 @@ outputs. Directions are labeled with the **compass heading** recorded in `_Notes
 (e.g. `NB` / `SB` / `EB` / `WB`), falling back to *Incoming* / *Outgoing* when a study
 doesn't specify one.
 
-The Python output has been **validated to within 1e-6 against the legacy Excel
-reports across 243 studies** (Merged / Incoming / Outgoing): total vehicles,
-average / median / max speed, ADT, average weekday traffic, and 85th-percentile speed
-all match exactly.
+### Correctness over Excel-compatibility
+
+This started as a reimplementation of the legacy Excel workbook, but the workbook is
+**not the reference any more** — several of its methods were simply wrong, and the
+code now does the correct thing instead. See
+[Where this deliberately differs from the Excel](#where-this-deliberately-differs-from-the-excel).
+
+The headline scalars — total vehicles, average / median / max speed, ADT, AWDT and the
+85th-percentile speed — still reconcile with the legacy reports to within 1e-6 across
+**742 studies (99.60 % of 15,547 comparisons)**; the residual mismatches are broken
+cached cells in a handful of old workbooks, not disagreements about method. Run
+`--validate` to reproduce that, and set `config.LEGACY_ANALYSIS` to regenerate the old
+numbers wholesale when you need to explain a difference.
 
 ## Quick start (Windows)
 
@@ -80,8 +89,9 @@ a **Location → Year** picker without re-walking the disk.
 It is built/refreshed **incrementally**: a refresh keeps the metrics already stored for
 unchanged studies and only processes **new** folders (the first build computes all
 ~750 studies once, ~2–3 min; later refreshes are sub-second). Refresh it via
-`run_dashboard.bat` (automatic at launch), the dashboard's **🔄 Rebuild catalog**
-button, or `python scripts/build_catalog.py`.
+`run_dashboard.bat` (automatic at launch) or `python scripts/build_catalog.py`.
+The dashboard itself never rebuilds the catalog — it reads the CSV and picks up a
+refresh automatically by watching the file's timestamp.
 
 ## Command-line interface
 
@@ -272,7 +282,7 @@ are baked into the checks themselves (`traffic_diag/diagnostics.py`).
 | `discovery.py` | Enumerate years/locations/studies; parse folder names; read `_Notes.txt`; **photo GPS → Google Maps URL** |
 | `catalog.py` | Build/refresh the incremental study-catalog table (structure + cached metrics) |
 | `study.py` | Load a study, select the best complete 7-day window, resolve the speed limit |
-| `metrics.py` | All statistics & tables, matching the Excel exactly |
+| `metrics.py` | All statistics & tables (standard practice, not Excel-bug-compatible) |
 | `diagnostics.py` | Data-quality checks → findings + overall risk |
 | `figures.py` | Matplotlib charts (percentile curve, weekday 85th, hourly/daily, D-factor) |
 | `styling.py` | Speed/volume color scales and table styling (group dividers, coloring) |
@@ -281,7 +291,7 @@ are baked into the checks themselves (`traffic_diag/diagnostics.py`).
 | `pipeline.py` | `process_study` / `process_all` — the shared backbone |
 | `validate.py` | Compare Python output against the legacy Excel cached values |
 
-## Methodology notes (matching the legacy Excel)
+## Methodology notes
 
 - **Average / Median / Max speed** use all vehicles in the window.
 - **Percentile speeds (85th, …)** use the **true Mon–Fri weekday** days in the window
@@ -290,10 +300,23 @@ are baked into the checks themselves (`traffic_diag/diagnostics.py`).
   intentionally **corrects a legacy-Excel flaw**: the workbook used the *first 5
   calendar days* from the window start and mislabeled it "weekday", so a non-Monday-start
   study pulled weekend days into the weekday 85th. Set `percentile_window="first"` (or
-  use `config.LEGACY_ANALYSIS`) to reproduce the old numbers — that's what `--validate`
-  uses to confirm an exact Excel match.
+  use `config.LEGACY_ANALYSIS`) to reproduce the old numbers. `--validate` does not go
+  through that setting: it passes the legacy day set to the metrics directly, so it
+  confirms the exact Excel match whatever the configured default is.
+  The **Percentile Speed** chart plots this same day set — it reads the dates back off
+  `DirectionMetrics.design_dates`, so the curve and the 85th-percentile marker drawn on
+  it always agree.
 - **ADT** = total ÷ number of days; **Average Weekday Traffic (AWDT)** = mean of Mon–Fri
   daily totals. AWDT is the headline volume metric on the summary and dashboard.
+- **Hourly tables.** Volume columns average the per-day counts. Speed columns
+  (mean and 85th) **pool the underlying speeds** rather than averaging per-day
+  statistics — averaging per-day means would let a day with one vehicle count as much
+  as a day with two hundred, and the mean of per-day 85th percentiles is not an 85th
+  percentile of anything. "Weekday" means **Mon–Fri** throughout.
+- **Percentile grid** spans every observed speed, so no vehicle is missing from the
+  denominator. **10-MPH pace** covers exactly ten consecutive integer speeds.
+- **D-Factor** is reported only when both directions were measured; a one-way study
+  gets a blank, not a 1.00 that looks like a measured 100/0 split.
 - **AM/PM/overall peak hour** = the busiest 60-minute window found by a **15-minute
   sliding window** over average **weekday** (Mon–Fri) volume; each peak carries its
   average weekday hourly volume.
@@ -305,6 +328,25 @@ are baked into the checks themselves (`traffic_diag/diagnostics.py`).
 - Each report/dashboard shows the **installation site photo** (`*_Loc.*`), its **GPS
   Google Maps link**, and the **location map** (`*_Map.*`).
 - See `tools/` for the reverse-engineering / verification / backfill scripts.
+
+## Where this deliberately differs from the Excel
+
+Each of these was a defect in the workbook, confirmed against the data and fixed here.
+`config.LEGACY_ANALYSIS` restores the old behaviour for side-by-side comparison.
+
+| What the Excel did | Why it was wrong | Real-world effect |
+|---|---|---|
+| "Weekday" 85th percentile = the **first 5 calendar days** of the window | Mislabels weekend days as weekdays whenever a study does not start on a Monday | Corrected — this is the `percentile_window` switch |
+| Hourly **"Weekday Avg"** column = **Mon–Thu**, silently dropping Friday | Disagreed with AWDT on the same report, which used Mon–Fri | Moved in **542 of 744** studies; median 2.9 veh/h, max 86 |
+| Hourly **85th "Weekday Overall"** = Mon–Thu | Same missing Friday, so Friday speeding was invisible | Moved in **542 of 744** studies; median 1.4 mph, max 21.6 |
+| Hourly **mean speed** summary = mean of the per-day means | Unweighted: a day with 1 vehicle weighed the same as a day with 200 | Moved in **744 of 745** studies; median 1.0 mph, max 4.8 |
+| Percentile denominator covered speeds **1–99 mph** only | Vehicles at 100+ mph vanished from every percentile while still counting toward `max_speed` | 8 studies record 100–104 mph |
+| "10-MPH pace" convolved **11** speed bins | An 11-mph-wide pace overstates its share of traffic | Latent — `pace` is computed but not yet displayed |
+| Speed→percentile table indexed the cumulative array **positionally** | Reported the figure for the *next* integer speed up | Latent — `speed_pct_table` is computed but not yet displayed |
+
+Two further fixes were ours, not the Excel's: a window longer than 7 days produced
+**duplicate weekday columns** (2 studies), and an absent direction reported the default
+**7-day** window length rather than the real one.
 
 ## Branding
 

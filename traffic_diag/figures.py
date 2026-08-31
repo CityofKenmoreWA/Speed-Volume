@@ -1,12 +1,13 @@
 """Matplotlib figures reproducing the legacy Excel report charts (headless / Agg).
 
-The five charts and their data sources match the workbook exactly (verified from
-the chart definitions in the ``* Report`` sheets):
+The five charts and their data sources follow the workbook (verified from the chart
+definitions in the ``* Report`` sheets); only the weekday-85th chart type deviates:
 
-  * "Percentile Speed"                         scatter: weekday speed vs P(speed<s)*100,
-                                               with vertical line at the 85th-pct speed
-                                               and a horizontal line at 85%.
-  * "Weekday 85th Percentile Speed Distribution" bar: per-hour weekday 85th percentile.
+  * "Percentile Speed"                         scatter: design-window speed vs
+                                               P(speed<s)*100, with a vertical line at the
+                                               85th-pct speed and a horizontal one at 85%.
+  * "Weekday 85th Percentile Speed Distribution" line: per-hour weekday 85th percentile
+                                               (drawn as a line, not the workbook's bars).
   * "Time Distribution"                        bar: average hourly volume (Σ/days).
   * "Daily Distribution"                       bar: daily totals Day1..Day7 (weekday labels).
   * "Speed Distribution"                       bar: all-window counts in 5-mph bins [lo,hi).
@@ -23,19 +24,34 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import FuncFormatter
 
-from .config import SPEED, TS, AnalysisConfig, DEFAULT_ANALYSIS
-from .metrics import DirectionMetrics, DOW_NAMES, HOUR_LABELS
+from .config import FIGURE_DPI, SPEED, TS, AnalysisConfig, DEFAULT_ANALYSIS
+from .metrics import (DirectionMetrics, DOW_NAMES, HOUR_LABELS,
+                      design_dates_for)
+
+# Raster resolution for every figure leaving this package. Setting the rcParams
+# (not just the explicit savefig calls) also covers Streamlit's st.pyplot, which
+# rasterizes with matplotlib's own defaults.
+matplotlib.rcParams["figure.dpi"] = FIGURE_DPI
+matplotlib.rcParams["savefig.dpi"] = FIGURE_DPI
 
 _BAR = "#4f81bd"      # Excel default blue
 _LINE = "#4f81bd"
 _WEEKEND = "#e08214"  # weekend bars (orange)
 
 
-def _weekday_speed_counts(window, cfg):
-    """Per-integer-speed counts for the weekday (first study_days-2 days) distribution."""
+def _design_speed_counts(window, m: DirectionMetrics, cfg):
+    """Per-integer-speed counts over the SAME days that produced ``m.design_speed``.
+
+    The day set is read back off the metrics rather than re-derived here, so the
+    plotted curve and the 85th-percentile marker on it always agree. ``cfg`` only
+    supplies the fallback (a DirectionMetrics built before ``design_dates`` existed)
+    and the speed grid.
+    """
     d = window.copy()
     d["date"] = d[TS].dt.normalize()
-    design = sorted(d["date"].unique())[: max(1, cfg.study_days - 2)]
+    design = list(getattr(m, "design_dates", None) or [])
+    if not design:
+        design = design_dates_for(sorted(d["date"].unique()), cfg)
     sp = d.loc[d["date"].isin(design), SPEED].round().astype(int)
     speeds = np.arange(1, cfg.max_speed_bin)
     cnt = np.array([(sp == s).sum() for s in speeds], dtype=float)
@@ -52,7 +68,7 @@ def _bar_labels(ax, bars, fmt):
 
 
 def fig_percentile_speed(window, m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
-    speeds, cnt = _weekday_speed_counts(window, cfg)
+    speeds, cnt = _design_speed_counts(window, m, cfg)
     n = cnt.sum()
     fig, ax = plt.subplots(figsize=(8, 4))
     if n > 0:
@@ -247,6 +263,6 @@ def save_figures(figs: dict, outdir: str, prefix: str = "") -> dict:
     paths = {}
     for name, fig in figs.items():
         path = os.path.join(outdir, f"{prefix}{name}.png")
-        fig.savefig(path, dpi=120, bbox_inches="tight")
+        fig.savefig(path, dpi=FIGURE_DPI, bbox_inches="tight")
         paths[name] = path
     return paths
