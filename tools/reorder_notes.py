@@ -45,26 +45,20 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from traffic_diag.config import DEFAULT_BASE, NO_DATA_BASE_MSG, REPO_ROOT  # noqa: E402
-from traffic_diag.discovery import Study, read_notes  # noqa: E402
+from traffic_diag.discovery import (FIELD_ALIASES, Study,  # noqa: E402
+                                    field_for, read_notes)
 
-# Field slots in the order they should appear. Each slot lists the line prefixes
-# that put a line in it, lower-cased.
-#
-# "Request:" is the older label for "Source:" - both carry "Annual Count",
-# "Corridor Study" and the like - so it sorts into the source slot. Its text is
-# left exactly as written; nothing is renamed.
-#
-# The misspellings are recognised for PLACEMENT ONLY, so an obviously-intended
-# "Icoming:" line still sits next to its "Outgoing:" partner instead of being
-# marooned in the notes. The text stays misspelled, so the production parser
-# behaves exactly as it did before; every occurrence is reported so the spellings
-# can be corrected by hand if wanted.
-SLOTS = [
-    ("Incoming", ("incoming:",), ("icoming:",)),
-    ("Outgoing", ("outgoing:",), ("outgoung:", "outoging:", "outgonig:", "outgoingp:")),
-    ("Limit", ("speed limit:", "limit:"), ()),
-    ("Source", ("source:", "request:"), ("soure:",)),
-]
+# The slot order to emit. "Limit" is handled here rather than in
+# discovery.FIELD_ALIASES because the production parser finds the posted limit
+# with its own regex (``_LIMIT_RE``) anywhere in the file, so "Limit:" is not one
+# of its named fields - but it still needs a place in the canonical order.
+SLOT_ORDER = ["Incoming", "Outgoing", "Limit", "Source"]
+LIMIT_PREFIXES = ("speed limit:", "limit:")
+
+# The spellings the production parser treats as correct. Anything in
+# FIELD_ALIASES that is not the canonical spelling is a known misspelling, worth
+# reporting so it can be corrected by hand - the tool never rewrites the text.
+MISSPELLINGS = {k for k, v in FIELD_ALIASES.items() if k != v and k != "request"}
 
 
 def classify(line: str):
@@ -72,14 +66,14 @@ def classify(line: str):
     low = line.strip().lower()
     if not low:
         return None, False
-    for name, canonical, typos in SLOTS:
-        for pre in canonical:
-            if low.startswith(pre):
-                return name, False
-        for pre in typos:
-            if low.startswith(pre):
-                return name, True
-    return None, False
+    for pre in LIMIT_PREFIXES:
+        if low.startswith(pre):
+            return "Limit", False
+    field = field_for(line.strip())
+    if not field:
+        return None, False
+    key = low.partition(":")[0].strip()
+    return field.capitalize(), key in MISSPELLINGS
 
 
 def split_fields(text: str):
@@ -114,7 +108,7 @@ def split_fields(text: str):
 
 def render(fields: dict, notes: list) -> str:
     """Canonical text, CRLF, with a trailing newline."""
-    out = [fields[name][0] for name, _, _ in SLOTS if name in fields]
+    out = [fields[name][0] for name in SLOT_ORDER if name in fields]
     if notes:
         if out:
             out.append("")

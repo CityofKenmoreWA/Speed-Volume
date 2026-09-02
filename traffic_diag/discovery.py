@@ -258,6 +258,45 @@ _ADHOC_RE = re.compile(r"(?i)ad[\s\-]?hoc")
 _ANNUAL_RE = re.compile(r"(?i)annual\s+count")
 
 
+# Field names as they actually appear in the archive, mapped to the field they
+# mean. Matching only the correct spelling cost eleven studies their direction
+# label outright: a "Outgoung: SB" line fell through to ``flags``, ``outgoing``
+# stayed None, and every report for that study fell back to the generic word
+# "Outgoing" instead of "SB". The typos are real and long-standing, so the parser
+# recognises them rather than requiring the source files to be corrected first.
+#
+# "Request:" is the older label for "Source:" - both carry "Annual Count",
+# "Corridor Study" and the like - so it reads as the source field.
+#
+# Keys are matched exactly (lower-cased, colon stripped), never fuzzily: a line
+# like "On South side Incoming: ..." or "Notes after retreival:" is prose and must
+# stay in ``flags``, which an edit-distance match would get wrong.
+FIELD_ALIASES = {
+    "incoming": "incoming",
+    "icoming": "incoming",
+    "outgoing": "outgoing",
+    "outgoung": "outgoing",
+    "outoging": "outgoing",
+    "outgonig": "outgoing",
+    "outgoingp": "outgoing",
+    "source": "source",
+    "soure": "source",
+    "request": "source",
+}
+
+
+def field_for(line: str) -> Optional[str]:
+    """Which notes field a line sets ('incoming' | 'outgoing' | 'source'), or None.
+
+    Only the text before the first colon is considered, so free prose that happens
+    to contain a colon is left alone.
+    """
+    head, sep, _ = line.partition(":")
+    if not sep:
+        return None
+    return FIELD_ALIASES.get(head.strip().lower())
+
+
 def classify_study_type(text: str) -> str:
     """Classify a study from its notes text. Returns one of:
 
@@ -296,13 +335,9 @@ def read_notes(study: Study) -> dict:
         line = line.strip()
         if not line:
             continue
-        low = line.lower()
-        if low.startswith("incoming:"):
-            info["incoming"] = line.split(":", 1)[1].strip()
-        elif low.startswith("outgoing:"):
-            info["outgoing"] = line.split(":", 1)[1].strip()
-        elif low.startswith("source:"):
-            info["source"] = line.split(":", 1)[1].strip()
+        field = field_for(line)
+        if field:
+            info[field] = line.split(":", 1)[1].strip()
         else:
             info["flags"].append(line)
     return info

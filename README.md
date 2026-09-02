@@ -97,6 +97,17 @@ Every CLI script also accepts `--base` to override the data folder inline.
 report/dashboard): explicit input → a `Limit: <n>` line in `_Notes.txt` → the value in
 the existing `_Report.xlsx` (fallback while migrating off Excel) → default **25 mph**.
 
+**`_Notes.txt` field names** are matched against `discovery.FIELD_ALIASES`, which
+carries the spellings that actually occur in the archive — including `Outgoung:`,
+`Outoging:`, `Outgonig:`, `OutgoingP:`, `Icoming:` and `Soure:`, plus `Request:` as the
+older label for `Source:`. Matching only the correct spelling used to cost **11
+studies** their direction label outright: the line fell through to `flags`, the
+direction stayed `None`, and every report for that study showed the generic word
+"Outgoing" instead of `SB`. Keys are matched exactly (lower-cased, text before the
+first colon) and never fuzzily, so prose like `On South side Incoming: ...` or
+`Notes after retreival: ...` correctly stays in the notes.
+`tools/reorder_notes.py` reads the same table, so the two cannot drift apart.
+
 ## Study catalog
 
 `study_catalog.csv` (written next to the data) is a one-row-per-study index of the
