@@ -136,6 +136,26 @@
  THINGS WORTH KNOWING
 ---------------------------------------------------------------------------
 
+ The numbers changed in 2026, on purpose. This app no longer reproduces the
+ old Excel workbook; several of the workbook's formulas were wrong and the
+ correct calculation is used instead. Reports produced now will not match
+ archived Excel reports cell for cell. The differences that matter:
+
+   - "Weekday" means Monday to Friday. The workbook's hourly weekday columns
+     used Monday to Thursday and silently dropped Friday.
+   - Hourly speed summaries pool the actual speeds. The workbook averaged
+     each day's average, so a day with one vehicle counted as much as a day
+     with two hundred.
+   - The morning peak hour must now START by 11:00 AM, and the evening peak
+     between 12:00 PM and 11:00 PM. The workbook's morning search ran to an
+     11:45 AM start, so it could report 11:45 AM - 12:45 PM as the "AM peak".
+   - The 85th-percentile speed uses the true Monday-to-Friday days in the
+     window, not the first five calendar days of it.
+
+ Nothing needs to be done about this. It is recorded here so that a number
+ that differs from an old report is not mistaken for a fault.
+
+
  The study list updates itself. There is no rebuild button and no data
  folder box in the dashboard - both were removed on purpose. The scheduled
  task owns the study list.

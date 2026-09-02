@@ -114,6 +114,11 @@ def peak_hours_15min(df, cfg: AnalysisConfig = DEFAULT_ANALYSIS):
     4-bin (60-min) window. Returns (am, pm, overall), each ``(label, volume)`` or
     None, where ``label`` is the window's start-end time and ``volume`` is the
     average weekday vehicles in that hour.
+
+    Each search is bounded by the latest permitted START time (see
+    ``AnalysisConfig``): the AM window starts no later than 11:00 AM, and the PM
+    window between noon and 11:00 PM. Without the AM bound the search ran to an
+    11:45 AM start and could report "11:45 AM - 12:45 PM" as the morning peak.
     """
     wd = df[df[TS].dt.dayofweek.isin(cfg.weekday_indices)]
     if wd.empty:
@@ -125,13 +130,20 @@ def peak_hours_15min(df, cfg: AnalysisConfig = DEFAULT_ANALYSIS):
     win = np.convolve(avg, np.ones(4), mode="valid")   # win[b] = 60-min window starting at 15-min bin b (0..92)
 
     def peak(lo, hi):
+        """Busiest window whose start bin is in [lo, hi). Bins are 15 minutes."""
+        lo = max(0, lo)
+        hi = min(len(win), hi)
         seg = win[lo:hi]
         if len(seg) == 0 or seg.max() == 0:
             return None
         b = lo + int(np.argmax(seg))
         return (f"{_fmt_clock(b * 15)} - {_fmt_clock(b * 15 + 60)}", float(win[b]))
 
-    return peak(0, 48), peak(48, 93), peak(0, 93)
+    # Bin index = hour * 4, and the ranges are inclusive of the latest start hour.
+    am_hi = cfg.am_peak_latest_start_hour * 4 + 1
+    pm_lo = cfg.pm_peak_earliest_start_hour * 4
+    pm_hi = cfg.pm_peak_latest_start_hour * 4 + 1
+    return peak(0, am_hi), peak(pm_lo, pm_hi), peak(0, pm_hi)
 
 
 def design_dates_for(dates, cfg: AnalysisConfig = DEFAULT_ANALYSIS) -> list:
