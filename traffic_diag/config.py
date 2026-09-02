@@ -199,6 +199,16 @@ class AnalysisConfig:
     design_percentile: float = 0.85
     # Width (mph) of the pace interval.
     pace_width: int = 10
+    # Latest hour (24h) at which a 60-minute peak window may START.
+    #
+    # The AM search used to run to an 11:45 AM start, which reported windows like
+    # "11:45 AM - 12:45 PM" as the morning peak - three quarters of it after noon.
+    # Capping the start at 11:00 AM keeps an AM peak inside the morning.
+    am_peak_latest_start_hour: int = 11
+    # PM windows start no earlier than noon and no later than 11:00 PM, so a peak
+    # never straddles midnight into the next day.
+    pm_peak_earliest_start_hour: int = 12
+    pm_peak_latest_start_hour: int = 23
     # Upper edge of the speed histogram bins (1-mph bins from 0).
     max_speed_bin: int = 100
     # Weekday set (Mon=0 .. Sun=6) used for "weekday" averages.

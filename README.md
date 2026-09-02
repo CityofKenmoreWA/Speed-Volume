@@ -337,7 +337,11 @@ are baked into the checks themselves (`traffic_diag/diagnostics.py`).
   gets a blank, not a 1.00 that looks like a measured 100/0 split.
 - **AM/PM/overall peak hour** = the busiest 60-minute window found by a **15-minute
   sliding window** over average **weekday** (Mon–Fri) volume; each peak carries its
-  average weekday hourly volume.
+  average weekday hourly volume. Each search is bounded by the latest permitted
+  **start** time (`AnalysisConfig.am_peak_latest_start_hour` = **11:00 AM**,
+  `pm_peak_earliest/latest_start_hour` = **12:00–11:00 PM**). Without the AM bound the
+  search ran to an 11:45 AM start and reported windows like `11:45 AM – 12:45 PM` as
+  the *morning* peak — which affected **146 of 745** studies.
 - **Per-location trend over time**: `--trend --location <name>` writes a CSV with one
   row per study (all years) — ADT, AWDT, 85th & mean speed, overall D-factor, an AADT
   placeholder, and peak hour + volume. Also the dashboard's **"Over time"** tab (a
@@ -360,6 +364,7 @@ Each of these was a defect in the workbook, confirmed against the data and fixed
 | Hourly **mean speed** summary = mean of the per-day means | Unweighted: a day with 1 vehicle weighed the same as a day with 200 | Moved in **744 of 745** studies; median 1.0 mph, max 4.8 |
 | Percentile denominator covered speeds **1–99 mph** only | Vehicles at 100+ mph vanished from every percentile while still counting toward `max_speed` | 8 studies record 100–104 mph |
 | "10-MPH pace" convolved **11** speed bins | An 11-mph-wide pace overstates its share of traffic | Latent — `pace` is computed but not yet displayed |
+| **AM peak** searched windows starting up to 11:45 AM | Reported `11:45 AM – 12:45 PM` as a *morning* peak, three quarters of it after noon | Moved the AM peak in **146 of 745** studies |
 | Speed→percentile table indexed the cumulative array **positionally** | Reported the figure for the *next* integer speed up | Latent — `speed_pct_table` is computed but not yet displayed |
 
 Two further fixes were ours, not the Excel's: a window longer than 7 days produced
