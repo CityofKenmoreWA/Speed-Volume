@@ -199,29 +199,18 @@ def _check_direction_balance(sd, th):
 
 
 def _check_speed_outliers(sd, th):
-    out = []
-    if sd.window.empty:
-        return out
-    sp = sd.window[SPEED]
-    lo = int((sp < th.speed_min).sum())
-    hi = int((sp > th.speed_max).sum())
-    if lo or hi:
-        out.append(Finding("speed_outliers", "info" if (lo + hi) / len(sp) < 0.01 else "warning",
-                           f"{lo} speeds < {th.speed_min} mph, {hi} > {th.speed_max} mph.",
-                           {"below": lo, "above": hi,
-                            "pct": round((lo + hi) / len(sp) * 100, 2)}))
-    return out
+    """Implausible speeds, escalated when they are outside the counter's spec.
 
+    Two questions, deliberately answered by ONE finding. How much of the traffic
+    sits at unusual speeds ([speed_min, speed_max], default 5-90 mph) decides
+    info vs warning by share. Whether any reading is outside the instrument's
+    RATED range ([device_speed_min, device_speed_max], 1.3-100 mph for the
+    Armadillo Tracker) forces a warning regardless of share, because such a value
+    cannot be a measured vehicle at all.
 
-def _check_device_range(sd, th):
-    """Flag readings the counter is not rated to produce.
-
-    Distinct from ``_check_speed_outliers``, which asks whether an implausible
-    SHARE of traffic sits at unusual-but-physically-possible speeds. This asks
-    whether a value could have come off the instrument at all: the counter is
-    rated 1.3-100 mph, so a 104 mph record is a measurement artifact rather than
-    a vehicle, and a single one is worth surfacing. Rated ``warning``, which puts
-    the study at MODERATE overall risk.
+    These were briefly two separate checks, which double-reported: the rated range
+    strictly contains the outlier range, so anything beyond 100 mph is necessarily
+    also beyond 90 and every device-range violation appeared twice on the report.
     """
     out = []
     if sd.window.empty:
@@ -229,24 +218,38 @@ def _check_device_range(sd, th):
     sp = sd.window[SPEED].dropna()
     if sp.empty:
         return out
-    lo = int((sp < th.device_speed_min).sum())
-    hi = int((sp > th.device_speed_max).sum())
+    lo = int((sp < th.speed_min).sum())
+    hi = int((sp > th.speed_max).sum())
     if not (lo or hi):
         return out
-    bits = []
-    if hi:
-        bits.append(f"{hi} above {th.device_speed_max:g} mph (highest {sp.max():.0f})")
-    if lo:
-        bits.append(f"{lo} below {th.device_speed_min:g} mph (lowest {sp.min():.0f})")
-    out.append(Finding(
-        "speed_out_of_device_range", "warning",
-        f"{lo + hi} reading(s) outside the counter's rated "
-        f"{th.device_speed_min:g}-{th.device_speed_max:g} mph range: "
-        f"{'; '.join(bits)}. Outside the instrument's specification, so these are "
-        f"artifacts rather than measured vehicles.",
-        {"above": hi, "below": lo,
-         "max_speed": float(sp.max()), "min_speed": float(sp.min()),
-         "pct": round((lo + hi) / len(sp) * 100, 4)}))
+
+    # Out of the instrument's specification - artifacts, not slow/fast vehicles.
+    dev_lo = int((sp < th.device_speed_min).sum())
+    dev_hi = int((sp > th.device_speed_max).sum())
+    n_dev = dev_lo + dev_hi
+
+    share = (lo + hi) / len(sp)
+    severity = "warning" if (n_dev or share >= 0.01) else "info"
+
+    msg = f"{lo} speeds < {th.speed_min:g} mph, {hi} > {th.speed_max:g} mph."
+    if n_dev:
+        parts = []
+        if dev_hi:
+            parts.append(f"{dev_hi} above the rated {th.device_speed_max:g} mph "
+                         f"maximum (highest {sp.max():.0f})")
+        if dev_lo:
+            parts.append(f"{dev_lo} below the rated {th.device_speed_min:g} mph "
+                         f"minimum (lowest {sp.min():.0f})")
+        msg += (f" {'; '.join(parts).capitalize()} - outside the counter's rated "
+                f"measurement range, so those are instrument artifacts rather than "
+                f"measured vehicles.")
+
+    out.append(Finding("speed_outliers", severity, msg,
+                       {"below": lo, "above": hi,
+                        "pct": round(share * 100, 2),
+                        "out_of_device_range": n_dev,
+                        "above_device_max": dev_hi, "below_device_min": dev_lo,
+                        "max_speed": float(sp.max())}))
     return out
 
 
@@ -313,8 +316,8 @@ def _check_notes(sd, th):
 
 
 _CHECKS = [_check_completeness, _check_gaps, _check_volume, _check_adt_vs_awdt,
-           _check_direction_balance, _check_speed_outliers, _check_device_range,
-           _check_classes, _check_timestamps, _check_files, _check_notes]
+           _check_direction_balance, _check_speed_outliers, _check_classes,
+           _check_timestamps, _check_files, _check_notes]
 
 
 def run_diagnostics(sd: "StudyData",

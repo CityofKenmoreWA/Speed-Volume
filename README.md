@@ -255,8 +255,7 @@ tunable in code without touching the checks themselves.
 | `adt_exceeds_awdt` | warning | ADT > AWDT (weekends busier than weekdays — verify before trusting the weekday D-factor). |
 | `single_direction` | info | Only one travel direction is present in the data. |
 | `direction_imbalance` | warning | Busier direction's share > `max_direction_share` (default **70 %**). |
-| `speed_outliers` | info / warning | Any speeds outside [`speed_min`, `speed_max`] mph (defaults **5**–**90**). **warning** if outliers ≥ 1 % of records, otherwise **info**. |
-| `speed_out_of_device_range` | warning | Any reading outside the counter's **rated measurement range** [`device_speed_min`, `device_speed_max`] (defaults **1.3**–**100** mph, from the Armadillo Tracker datasheet). Outside the instrument's specification, so such a value is an artifact rather than a vehicle — **one occurrence is enough**, regardless of share, and the study reads **moderate**. |
+| `speed_outliers` | info / warning | Any speeds outside [`speed_min`, `speed_max`] mph (defaults **5**–**90**). **warning** if outliers ≥ 1 % of records, **or** if any reading falls outside the counter's *rated* range [`device_speed_min`, `device_speed_max`] (**1.3**–**100** mph) — a value the instrument cannot produce is an artifact, so one is enough to escalate, and the study reads **moderate**. Otherwise **info**. |
 | `class_distribution` | warning | Heavy-vehicle share ("Large") > **15 %**. |
 | `class_distribution` | info | All vehicles fall in a single class. |
 | `duplicate_records` | warning | > **40 %** of raw rows are fully-identical (timestamp + speed + class + direction) — possible data doubling. |
@@ -286,7 +285,7 @@ Severity order (used for sorting the findings table, worst first):
 | `low_volume_per_day` | `50` | `low_volume` |
 | `max_direction_share` | `0.70` | `direction_imbalance` |
 | `speed_min` / `speed_max` | `5.0` / `90.0` mph | `speed_outliers` |
-| `device_speed_min` / `device_speed_max` | `1.3` / `100.0` mph | `speed_out_of_device_range` |
+| `device_speed_min` / `device_speed_max` | `1.3` / `100.0` mph | `speed_outliers` (escalation to warning) |
 | `max_gap_hours` | `3.0` h | `data_gap` |
 | `max_daily_volume_ratio` | `3.0` | `erratic_volume` |
 
@@ -395,8 +394,11 @@ be read:
   vehicles travelling at or above that floor, not all traffic. The 85th percentile,
   living at the top of the distribution, is unaffected.
 
-The rated range is **1.3–100 mph**; readings outside it are flagged by the
-`speed_out_of_device_range` diagnostic (7 studies in the archive record 102–104 mph).
+The rated range is **1.3–100 mph**; readings outside it escalate the
+`speed_outliers` diagnostic to **warning** (7 studies in the archive record
+102–104 mph). It is one finding rather than two on purpose: the rated range
+strictly contains the outlier range, so every out-of-spec reading is already an
+outlier and a separate check would double-report the same vehicle.
 
 ## Branding
 
