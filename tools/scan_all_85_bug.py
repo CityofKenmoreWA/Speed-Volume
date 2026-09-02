@@ -3,16 +3,17 @@
 Reports how many report workbooks contain the typo on each Set-up sheet, and
 lists any files that do NOT (i.e., a different/older template).
 """
+import os
 import sys
 import warnings
 
 warnings.simplefilter("ignore")
-sys.path.insert(0, r"C:\Users\moshanreh\Desktop\Mohammad\Claude\Intersection")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openpyxl import load_workbook
 from traffic_diag.discovery import find_studies
 
-BASE = r"C:\Users\moshanreh\Desktop\Mohammad\Speed and Volume Studies"
+from traffic_diag.config import DEFAULT_BASE as BASE   # env var -> data_base.txt
 SHEETS = ["Merged Set up", "Incoming Set up", "Outgoing Set up"]
 
 studies = [s for s in find_studies(BASE) if s.report_xlsx]

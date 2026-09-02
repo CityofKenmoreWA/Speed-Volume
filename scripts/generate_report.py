@@ -24,7 +24,8 @@ import sys
 # Allow running as a plain script (no install needed).
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from traffic_diag.config import DEFAULT_BASE, REPORTS_DIR  # noqa: E402
+from traffic_diag.config import (DEFAULT_BASE, NO_DATA_BASE_MSG,  # noqa: E402
+                                 REPORTS_DIR)
 from traffic_diag.discovery import find_studies, find_years  # noqa: E402
 from traffic_diag.pipeline import process_study  # noqa: E402
 from traffic_diag.report import (write_excel_report, write_html_report,  # noqa: E402
@@ -74,6 +75,8 @@ def main(argv=None):
                    help="include _Compromised Studies folders")
     args = p.parse_args(argv)
 
+    if not args.base:
+        p.error(NO_DATA_BASE_MSG)
     if not os.path.isdir(args.base):
         p.error(f"base folder not found: {args.base}")
 

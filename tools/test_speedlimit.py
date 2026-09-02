@@ -5,12 +5,12 @@ import tempfile
 import warnings
 
 warnings.simplefilter("ignore")
-sys.path.insert(0, r"C:\Users\moshanreh\Desktop\Mohammad\Claude\Intersection")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from traffic_diag.discovery import _LIMIT_RE, Study, find_studies
 from traffic_diag.study import resolve_speed_limit
 
-BASE = r"C:\Users\moshanreh\Desktop\Mohammad\Speed and Volume Studies"
+from traffic_diag.config import DEFAULT_BASE as BASE   # env var -> data_base.txt
 
 print("Regex (structured 'Limit:' matches; prose does NOT):")
 cases = {

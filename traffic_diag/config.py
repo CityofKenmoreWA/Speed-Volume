@@ -26,12 +26,57 @@ REPO_ROOT = os.environ.get(
 # Where generated reports go. Relative to the repo root by default; overridable.
 REPORTS_DIR = os.environ.get("TRAFFIC_REPORTS_DIR", os.path.join(REPO_ROOT, "reports"))
 
-# Root of the DATA tree (the <year> folders). This is the one directory OUTSIDE the
-# repo; set TRAFFIC_DATA_BASE in the bat file to point elsewhere. The value below
-# is the current default and is used when the env var is not set.
-DEFAULT_BASE = os.environ.get(
-    "TRAFFIC_DATA_BASE",
-    r"C:\Users\moshanreh\Desktop\Mohammad\Speed and Volume Studies",
+# --------------------------------------------------------------------------- #
+# Root of the DATA tree (the <year> folders) - the one directory outside the app.
+#
+# Resolved per machine, first hit wins:
+#   1. the TRAFFIC_DATA_BASE environment variable - what run_dashboard.bat and the
+#      server's KenmoreTrafficDashboard.bat set;
+#   2. a ``data_base.txt`` beside the app holding the path on one line. It is
+#      gitignored, so it stays on the machine it describes and never reaches the
+#      repo or the handoff bundle. Copy ``data_base.txt.example`` to create it.
+#   3. nothing - an empty string, which callers report via NO_DATA_BASE_MSG.
+#
+# There is deliberately NO built-in path. A hardcoded default meant that whenever
+# the environment variable went missing the app silently pointed at one
+# developer's home directory, named that person in the error, and shipped their
+# username inside a deliverable handed to the city's IT department.
+# --------------------------------------------------------------------------- #
+DATA_BASE_FILE = os.path.join(REPO_ROOT, "data_base.txt")
+
+
+def read_data_base_file(path: Optional[str] = None) -> str:
+    """The path held in ``data_base.txt``, or "" if it is absent/blank/unreadable.
+
+    First non-blank, non-comment line wins. Surrounding quotes are stripped and
+    ``%VARS%`` / ``~`` are expanded, so the file can be written the way a path is
+    normally pasted out of Explorer.
+    """
+    try:
+        with open(path or DATA_BASE_FILE, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip().strip('"').strip()
+                if line and not line.startswith("#"):
+                    return os.path.expandvars(os.path.expanduser(line))
+    except OSError:
+        pass
+    return ""
+
+
+def resolve_data_base() -> str:
+    """The configured study-data root, or "" when nothing is configured."""
+    env = (os.environ.get("TRAFFIC_DATA_BASE") or "").strip().strip('"').strip()
+    return env or read_data_base_file()
+
+
+DEFAULT_BASE = resolve_data_base()
+
+# Shown when no data root is configured at all, so the failure names the fix
+# rather than a path nobody recognises.
+NO_DATA_BASE_MSG = (
+    "No study-data folder is configured. Set the TRAFFIC_DATA_BASE environment "
+    "variable, or put the path on one line in data_base.txt next to the app "
+    "(copy data_base.txt.example), or pass --base on the command line."
 )
 
 # --------------------------------------------------------------------------- #
