@@ -5,7 +5,8 @@ workbook once, then check BOTH the scalar stats (Set-up B6..B13) and the full
 hourly table (Report rows 31..54: weekday-85th, per-day counts, averages).
 
 Usage:  python tools/validate_all.py [--sample N] [--year YYYY]
-Prints flushed progress and a final summary; writes details to validate_results.csv.
+Prints flushed progress and a final summary; writes details to
+reports/validate_results.csv.
 """
 import os
 import sys
@@ -136,7 +137,9 @@ def main():
     print(f"SCALAR cells: {s_ok}/{s_tot} = {s_ok/max(1,s_tot)*100:.3f}%", flush=True)
     print(f"HOURLY cells: {h_ok}/{h_tot} = {h_ok/max(1,h_tot)*100:.3f}%", flush=True)
     df = pd.DataFrame(rows, columns=["study", "direction", "kind", "field", "python", "excel"])
-    df.to_csv(os.path.join(REPO_ROOT, "validate_results.csv"), index=False)
+    out = os.path.join(REPO_ROOT, "reports", "validate_results.csv")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    df.to_csv(out, index=False)
     mism = df[df.kind != "error"]
     print(f"Mismatched cells: {len(mism)} across {mism['study'].nunique()} studies", flush=True)
     if len(mism):
