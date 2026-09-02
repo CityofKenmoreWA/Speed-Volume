@@ -31,10 +31,22 @@ numbers wholesale when you need to explain a difference.
 ## Quick start (Windows)
 
 Double-click **`run_dashboard.bat`**. It:
-1. sets the two configurable paths (see [Configuration](#configuration)),
+1. sets the configurable paths (see [Configuration](#configuration)),
 2. stops any stale Streamlit server on port 8501,
-3. builds/refreshes the **study catalog** (all locations × years), and
-4. launches the dashboard at `http://<your-ip>:8501`.
+3. kicks off a **study catalog** refresh *in the background*, and
+4. launches the dashboard at `http://<your-ip>:8501` — immediately, without
+   waiting for step 3.
+
+The dashboard reads the catalog CSV already on disk and picks up the refreshed one
+by itself when it lands, because it watches that file's timestamp. Set
+`REFRESH_CATALOG=0` in the bat to skip the refresh entirely.
+
+> The refresh used to run in the *foreground*. That was fine while it stayed
+> sub-second — it reuses the cached numbers for every unchanged study — but any edit
+> to a study's `_Raw.csv`, `_Notes.txt` or `_Report.xlsx` changes its fingerprint and
+> forces a recompute, so a bulk edit across many studies turned launch into a
+> multi-minute wait. Worse, closing the window part-way meant the refreshed catalog
+> was never written, so the next launch started the same wait over again.
 
 Everything the app produces lives **inside the repo**; the only external directory is
 the study **data** folder.
