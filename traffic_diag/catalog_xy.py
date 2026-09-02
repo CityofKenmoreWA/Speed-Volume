@@ -17,7 +17,7 @@ from typing import Optional
 import pandas as pd
 
 from . import catalog
-from .discovery import photo_gps  # noqa: F401  (kept for API compatibility)
+from .discovery import is_usable_gps, photo_gps  # noqa: F401  (photo_gps kept for API compat)
 
 CATALOG_XY_NAME = "study_catalog_latlon.csv"
 LATLON_COLUMNS = ["lat", "lon"]
@@ -25,11 +25,11 @@ CATALOG_XY_COLUMNS = catalog.CATALOG_COLUMNS + LATLON_COLUMNS
 
 
 def _valid_gps(gps) -> bool:
-    """True only for a real fix (present and not 0/0)."""
+    """True only for a real fix. Defers to ``discovery.is_usable_gps`` so the
+    lat/lon catalog and the dashboard agree on what counts as a location."""
     if not gps:
         return False
-    lat, lon = gps
-    return lat is not None and lon is not None and lat != 0 and lon != 0
+    return is_usable_gps(gps[0], gps[1])
 
 
 def latlon_from_gps(gps) -> tuple:

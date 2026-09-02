@@ -88,8 +88,10 @@ class Study:
     def loc_gps(self) -> Optional[tuple]:
         """(lat, lon) decimal degrees from the installation photos' EXIF GPS, or None.
 
-        When a site has several photos, use the first one that actually carries GPS
-        tags — in a multi-photo set not every image is necessarily geotagged.
+        When a site has several photos, use the first one carrying a USABLE fix —
+        in a multi-photo set not every image is geotagged, and some carry a
+        placeholder 0/0 "no fix", which ``photo_gps`` rejects. So a site whose
+        first photo has no lock still gets mapped from a later one.
         """
         for p in self.loc_photos:
             gps = photo_gps(p)
@@ -116,10 +118,32 @@ def _dms_to_decimal(dms, ref) -> float:
     return -val if str(ref).upper() in ("S", "W") else val
 
 
+def is_usable_gps(lat, lon) -> bool:
+    """True for coordinates that describe a real place.
+
+    A camera that never got a satellite lock writes latitude and longitude of
+    exactly zero rather than omitting the tags, and 0,0 is a point in the Gulf of
+    Guinea - so mapping it produces a confident pin in the Atlantic. 106 of the
+    archive's installation photos carry such a fix. Out-of-range values are
+    rejected on the same grounds: they cannot be a location either.
+    """
+    if lat is None or lon is None:
+        return False
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return False
+    if lat == 0 and lon == 0:
+        return False
+    return abs(lat) <= 90 and abs(lon) <= 180
+
+
 def photo_gps(path: Optional[str]) -> Optional[tuple]:
     """(lat, lon) decimal degrees from an image's EXIF GPS tags, or None.
 
-    Returns None when the file is missing, has no GPS block, or can't be read.
+    Returns None when the file is missing, has no GPS block, can't be read, or
+    carries a placeholder 0/0 "no fix" (see ``is_usable_gps``). Callers can treat
+    a non-None result as a mappable location.
     """
     if not path or not os.path.exists(path):
         return None
@@ -134,8 +158,11 @@ def photo_gps(path: Optional[str]) -> Optional[tuple]:
         lon, lon_ref = t.get("GPSLongitude"), t.get("GPSLongitudeRef")
         if not (lat and lon and lat_ref and lon_ref):
             return None
-        return (round(_dms_to_decimal(lat, lat_ref), 6),
-                round(_dms_to_decimal(lon, lon_ref), 6))
+        lat_d = round(_dms_to_decimal(lat, lat_ref), 6)
+        lon_d = round(_dms_to_decimal(lon, lon_ref), 6)
+        if not is_usable_gps(lat_d, lon_d):
+            return None
+        return (lat_d, lon_d)
     except Exception:
         return None
 
