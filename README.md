@@ -169,7 +169,8 @@ for unchanged studies.
 
 Same rows as `build_catalog.py` plus **lat, lon** read straight from each
 installation photo's EXIF GPS (WGS84 / EPSG:4326, rounded to 6 dp ≈ 0.1 m).
-Studies whose photo has no GPS (or has a 0/0 fix) get empty lat/lon.
+Studies whose photo has no GPS (or has a 0/0 fix) get empty lat/lon — see
+[GPS on the installation photos](#gps-on-the-installation-photos).
 Incremental for both metrics and lat/lon — reruns only touch new studies.
 No pyproj / projection dependency.
 
@@ -371,6 +372,25 @@ Each of these was a defect in the workbook, confirmed against the data and fixed
 Two further fixes were ours, not the Excel's: a window longer than 7 days produced
 **duplicate weekday columns** (2 studies), and an absent direction reported the default
 **7-day** window length rather than the real one.
+
+## GPS on the installation photos
+
+The dashboard and the reports link the installation photo to its location on Google
+Maps, read from the photo's EXIF GPS. Of 745 studies: **385** carry a usable fix,
+**106** carry a placeholder **0/0** fix, **256** have a photo with no GPS tags, and
+**6** have no photo.
+
+A camera that never got a satellite lock writes latitude and longitude of exactly
+zero rather than omitting the tags — and 0,0 is a real point in the Gulf of Guinea,
+so those 106 studies used to render `0.00000, 0.00000` with a confident Google Maps
+link into the Atlantic. `discovery.is_usable_gps` now rejects a 0/0 pair (and any
+out-of-range value) at the source, so `photo_gps` returns `None` and every consumer
+— dashboard, HTML, PDF, and the lat/lon catalog — agrees. Where there is no usable
+fix the reports say **"GPS location unavailable"** rather than showing zeros or
+saying nothing at all.
+
+Because the rejection happens per photo, a site with several photos whose first one
+has no lock now falls through to a later geotagged one.
 
 ## The counter, and what it means for the numbers
 

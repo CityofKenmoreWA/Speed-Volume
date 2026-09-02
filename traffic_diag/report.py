@@ -204,7 +204,8 @@ _HTML = Template("""<!DOCTYPE html><html><head><meta charset="utf-8">
 <h2>Installation Site</h2>
 <div class="meta">Location: <b>{{ location }}</b> &nbsp;|&nbsp; Installed: {{ install_date }}
  &nbsp;|&nbsp; Incoming: {{ inc }} · Outgoing: {{ out }}
-{% if maps_url %} &nbsp;|&nbsp; 📍 <a href="{{ maps_url }}">Open in Google Maps</a> ({{ gps }}){% endif %}</div>
+{% if maps_url %} &nbsp;|&nbsp; 📍 <a href="{{ maps_url }}">Open in Google Maps</a> ({{ gps }})
+{% else %} &nbsp;|&nbsp; 📍 GPS location unavailable{% endif %}</div>
 <div class="figs">
 {% for img in loc_imgs %}<figure style="display:inline-block;margin:6px"><img src="{{ img }}" style="max-width:400px">
 <figcaption style="font-size:12px;color:#555">Installation site photo{% if loc_imgs|length > 1 %} {{ loop.index }} of {{ loc_imgs|length }}{% endif %}</figcaption></figure>{% endfor %}
@@ -450,6 +451,8 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
         if gps:
             flow += [Paragraph(f'Photo GPS: {gps[0]:.5f}, {gps[1]:.5f} — '
                                f'<a href="{maps_url(*gps)}" color="blue">Open in Google Maps</a>', small)]
+        else:
+            flow += [Paragraph('Photo GPS: unavailable', small)]
         flow += [Spacer(1, 8)]
 
     diag = result.diagnostics

@@ -284,6 +284,11 @@ if _loc_photos or _map_img:
             if gps:
                 pc[0].markdown(f"📍 [Open in Google Maps]({maps_url(*gps)}) "
                                f"· {gps[0]:.5f}, {gps[1]:.5f}")
+            else:
+                # Older photos often have no GPS tags, or a placeholder 0/0 fix.
+                # Saying so beats a link to 0,0 in the Atlantic, and beats silence.
+                pc[0].caption("📍 GPS location unavailable — this installation "
+                              "photo carries no usable GPS fix.")
         if _map_img:
             pc[1].image(_map_img, caption="Location map", width="stretch")
 
