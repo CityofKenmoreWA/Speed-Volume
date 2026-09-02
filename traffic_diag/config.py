@@ -254,9 +254,17 @@ class DiagnosticThresholds:
     low_volume_per_day: int = 50
     # Directional imbalance flagged when the busier direction exceeds this share.
     max_direction_share: float = 0.70
-    # Speeds outside [min, max] mph are flagged as outliers.
+    # Speeds outside [min, max] mph are flagged as implausible-but-possible
+    # outliers, weighted by how large a share of the data they are.
     speed_min: float = 5.0
     speed_max: float = 90.0
+    # Rated measurement range of the counter itself. The Houston Radar Armadillo
+    # Tracker datasheet gives "Speed Measurement Range: 1.3mph to 100mph
+    # (2.1km/h to 161km/h)", so a reading outside this is not a slow or fast
+    # vehicle - it is an instrument artifact, and one occurrence is enough to
+    # flag. Change these if the fleet is ever replaced with a different counter.
+    device_speed_min: float = 1.3
+    device_speed_max: float = 100.0
     # A gap (no observations) longer than this many hours is flagged.
     max_gap_hours: float = 3.0
     # Day-to-day volume swing (max/min) above this is flagged as erratic.
