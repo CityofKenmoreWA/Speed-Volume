@@ -22,6 +22,7 @@ from traffic_diag.config import (DIRECTION, TS, DEFAULT_ANALYSIS,
 from traffic_diag.discovery import find_studies
 from traffic_diag.metrics import DOW_NAMES, compute_direction_metrics
 from traffic_diag.study import load_study
+from traffic_diag.validate import day_columns, find_hourly_header
 
 SCALAR_CELLS = {"B6": "p85_speed", "B7": "average_speed", "B8": "median_speed",
                 "B9": "max_speed", "B10": "adt", "B11": "average_weekday_traffic",
@@ -98,20 +99,27 @@ def main():
                     ws = wb[REPORT[d]]
                     m = metrics[d]
                     hv, p85 = m.hourly_volume, m.hourly_weekday_p85
+                    # Locate the hourly table: its header row varies by template
+                    # vintage (28, 29 or 30 across the archive).
+                    hdr = find_hourly_header(ws)
+                    if hdr is None:
+                        continue
                     for hh in range(24):
-                        r = 31 + hh
+                        r = hdr + 1 + hh
                         pv = None if p85 is None or pd.isna(p85.get(hh)) else float(p85.get(hh))
                         h_tot += 1; ok = close(pv, ws.cell(row=r, column=2).value); h_ok += ok
                         if not ok:
                             rows.append((study.study_id, d, "hourly", f"p85_h{hh}", pv,
                                          ws.cell(row=r, column=2).value))
                         # Excel hourly columns are Day1..Day7 (chronological) with
-                        # weekday-NAME headers in row 30 — map by the header name.
+                        # weekday-NAME headers on the header row — map by name.
                         for col in range(3, 10):
-                            day = ws.cell(row=30, column=col).value   # e.g. "Saturday"
+                            day = ws.cell(row=hdr, column=col).value   # e.g. "Saturday"
                             if day not in DAY_COL:
                                 continue
-                            pv = float(hv.loc[hh, day]) if (hv is not None and day in hv.columns) else 0.0
+                            dcols = day_columns(hv, day)
+                            # absent weekday = the study never ran that day = 0
+                            pv = float(hv.loc[hh, dcols].sum()) if dcols else 0.0
                             h_tot += 1; ok = close(pv, ws.cell(row=r, column=col).value); h_ok += ok
                             if not ok:
                                 rows.append((study.study_id, d, "hourly", f"{day[:3]}_h{hh}", pv,

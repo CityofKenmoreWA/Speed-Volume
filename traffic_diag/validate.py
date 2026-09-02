@@ -116,9 +116,50 @@ def validate_study(study: Study, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
 
 # --------------------------------------------------------------------------- #
 # Hourly-table (cell-level) validation against the Excel "* Report" sheets.
-# Layout rows 31..54 (24 hours): B=Weekday 85th pctl, C..I=Mon..Sun counts,
-# J=Average, K=Weekday Avg, L=Weekend Avg.
+#
+# The table is LOCATED, not assumed. Its header row is whichever row has "Time" in
+# column A; the 24 hour rows follow it. Across the 750 archived workbooks that
+# header sits on row 28, 29 or 30 depending on the template vintage, so the old
+# hardcoded "hour 0 is row 31" silently compared every hour against the workbook's
+# next hour in 85 of them.
+#
+# Column layout also varies: B = weekday 85th percentile and C..I = Mon..Sun
+# counts throughout, but column J is "Average" in some vintages and "Total" in
+# others, and K/L ("Weekday Avg" / "Weekend Avg") are simply absent in 239 of
+# them. Summary columns are therefore matched by their header LABEL.
 # --------------------------------------------------------------------------- #
+
+
+def find_hourly_header(ws) -> Optional[int]:
+    """Row number of the hourly table's header (col A == "Time"), or None."""
+    for r in range(20, 46):
+        v = ws.cell(row=r, column=1).value
+        if isinstance(v, str) and v.strip().lower() == "time":
+            return r
+    return None
+
+
+def day_columns(hv, day: str) -> list:
+    """Our columns holding ``day``'s data: exactly "Monday", or "Monday 03-25" etc.
+
+    A window longer than seven days repeats a weekday and the extra columns carry
+    their date to stay unique. Excel keeps one column per weekday name, so the
+    comparable value is the sum over all of ours for that day.
+    """
+    if hv is None:
+        return []
+    return [c for c in hv.columns
+            if isinstance(c, str) and (c == day or c.startswith(day + " "))]
+
+
+def _summary_columns(ws, header_row: int) -> dict:
+    """{column index: header label} for the summary columns right of Sunday."""
+    out = {}
+    for c in range(10, 14):
+        v = ws.cell(row=header_row, column=c).value
+        if isinstance(v, str) and v.strip():
+            out[c] = v.strip()
+    return out
 _REPORT_SHEETS = {"Merged": "Merged Report", "Incoming": "Incoming Report",
                   "Outgoing": "Outgoing Report"}
 _DAY_COL = {n: 3 + i for i, n in enumerate(DOW_NAMES)}   # Monday->C(3) .. Sunday->I(9)
@@ -177,11 +218,15 @@ def validate_hourly_study(study, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
         ws = wb[sheet]
         m = metrics[direction]
         hv, p85 = m.hourly_volume, m.hourly_weekday_p85
+        header = find_hourly_header(ws)
+        if header is None:
+            continue                     # no recognisable hourly table on this sheet
         # Excel hourly columns are Day1..Day7 (chronological) with weekday-NAME
-        # headers in row 30 — map by header name, not fixed position.
-        col_day = {c: ws.cell(row=30, column=c).value for c in range(3, 10)}
+        # headers on the header row — map by header name, not fixed position.
+        col_day = {c: ws.cell(row=header, column=c).value for c in range(3, 10)}
+        summary_cols = _summary_columns(ws, header)
         for h in range(24):
-            r = 31 + h
+            r = header + 1 + h
             # Weekday 85th percentile (col B). NOTE: the legacy template has a known
             # bug in the hour-0 per-hour sub-table (a speed bin references the wrong
             # hour's row), so the midnight weekday-85th can differ by a fraction of a
@@ -193,14 +238,42 @@ def validate_hourly_study(study, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
             for col, day in col_day.items():
                 if day not in _DAY_COL:
                     continue
-                pv = float(hv.loc[h, day]) if (hv is not None and day in hv.columns) else 0.0
+                cols = day_columns(hv, day)
+                if len(cols) > 1:
+                    # The window covers this weekday twice (a >7-day study). The
+                    # workbook has only seven day columns, so it keeps the FIRST
+                    # occurrence and drops the rest - there is no comparable cell,
+                    # and our (complete) figure is not a mismatch. Skip rather than
+                    # score it. Two archived studies are affected.
+                    continue
+                # No column for this weekday = the study never ran that day, so
+                # zero vehicles - which is exactly what the workbook records.
+                pv = float(hv.loc[h, cols[0]]) if cols else 0.0
                 cmp(direction, h, f"count_{day[:3]}", pv, ws.cell(row=r, column=col).value)
-            # Averages J/K/L
-            for field, col in (("avg", 10), ("weekday_avg", 11), ("weekend_avg", 12)):
-                colname = {"avg": "Average", "weekday_avg": "Weekday Avg",
-                           "weekend_avg": "Weekend Avg"}[field]
-                pv = (float(hv.loc[h, colname]) if (hv is not None and colname in hv.columns
-                      and not pd.isna(hv.loc[h, colname])) else None)
+            # Summary columns, matched by the label the workbook actually uses.
+            # "Total" is the sum of that hour's day counts, which our table does not
+            # carry as a column, so it is summed here rather than compared against
+            # our per-hour Average (a factor-of-seven mismatch in 262 workbooks).
+            for col, label in summary_cols.items():
+                key = label.lower()
+                if key == "total":
+                    # Same caveat as the per-day columns: if any weekday repeats,
+                    # the workbook's Total covers only seven of our days.
+                    per_day = {d: day_columns(hv, d) for d in DOW_NAMES}
+                    if any(len(c) > 1 for c in per_day.values()):
+                        continue
+                    days = [c for cols_ in per_day.values() for c in cols_]
+                    pv = float(hv.loc[h, days].sum()) if days else None
+                    field = "total"
+                else:
+                    colname = {"average": "Average", "weekday avg": "Weekday Avg",
+                               "weekend avg": "Weekend Avg"}.get(key)
+                    if colname is None:
+                        continue         # a summary column we do not model
+                    pv = (float(hv.loc[h, colname])
+                          if (hv is not None and colname in hv.columns
+                              and not pd.isna(hv.loc[h, colname])) else None)
+                    field = key.replace(" ", "_")
                 cmp(direction, h, field, pv, ws.cell(row=r, column=col).value)
     wb.close()
     return pd.DataFrame(rows)
