@@ -25,6 +25,30 @@ from traffic_diag.catalog import catalog_path, refresh_catalog
 from traffic_diag.config import DEFAULT_BASE, NO_DATA_BASE_MSG
 
 
+def _why_unwritable(path: str) -> str:
+    """A specific reason the catalog could not be replaced, for the log.
+
+    Worth the effort because the common cause is invisible: Excel holds an
+    exclusive lock on a CSV for as long as it is open, without leaving a lock file
+    behind, so the folder looks perfectly writable and only the replace fails.
+    """
+    folder = os.path.dirname(path)
+    if not os.access(folder, os.W_OK):
+        return f"the folder itself is not writable: {folder}"
+    if not os.path.exists(path):
+        return "the folder is writable and the file does not exist, which is unexpected."
+    try:
+        with open(path, "a"):
+            pass
+    except PermissionError:
+        return ("the file is LOCKED by another program. Excel keeps an exclusive "
+                "lock on a CSV while it is open - close study_catalog.csv there "
+                "and run this again.")
+    except OSError as e:
+        return f"opening it for write failed: {e}"
+    return "the file is writable now, so the lock was momentary - re-running should work."
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build/refresh the study catalog table.")
     ap.add_argument("--base", default=DEFAULT_BASE,
@@ -55,9 +79,10 @@ def main() -> int:
     if wrote:
         print(f"[{stamp}] wrote {out}")
         return 0
-    print(f"[{stamp}] COULD NOT WRITE {out} - the catalog is now stale. "
-          f"Check that the account running this task has write access to the file "
-          f"(and that it is not open in Excel).", file=sys.stderr)
+    print(f"[{stamp}] COULD NOT WRITE {out} - the catalog is now stale, so the "
+          f"numbers just computed were discarded and the next run will recompute "
+          f"them all over again.", file=sys.stderr)
+    print(f"[{stamp}] Reason: {_why_unwritable(out)}", file=sys.stderr)
     return 2
 
 
