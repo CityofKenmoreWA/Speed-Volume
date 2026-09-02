@@ -213,6 +213,43 @@ def _check_speed_outliers(sd, th):
     return out
 
 
+def _check_device_range(sd, th):
+    """Flag readings the counter is not rated to produce.
+
+    Distinct from ``_check_speed_outliers``, which asks whether an implausible
+    SHARE of traffic sits at unusual-but-physically-possible speeds. This asks
+    whether a value could have come off the instrument at all: the counter is
+    rated 1.3-100 mph, so a 104 mph record is a measurement artifact rather than
+    a vehicle, and a single one is worth surfacing. Rated ``warning``, which puts
+    the study at MODERATE overall risk.
+    """
+    out = []
+    if sd.window.empty:
+        return out
+    sp = sd.window[SPEED].dropna()
+    if sp.empty:
+        return out
+    lo = int((sp < th.device_speed_min).sum())
+    hi = int((sp > th.device_speed_max).sum())
+    if not (lo or hi):
+        return out
+    bits = []
+    if hi:
+        bits.append(f"{hi} above {th.device_speed_max:g} mph (highest {sp.max():.0f})")
+    if lo:
+        bits.append(f"{lo} below {th.device_speed_min:g} mph (lowest {sp.min():.0f})")
+    out.append(Finding(
+        "speed_out_of_device_range", "warning",
+        f"{lo + hi} reading(s) outside the counter's rated "
+        f"{th.device_speed_min:g}-{th.device_speed_max:g} mph range: "
+        f"{'; '.join(bits)}. Outside the instrument's specification, so these are "
+        f"artifacts rather than measured vehicles.",
+        {"above": hi, "below": lo,
+         "max_speed": float(sp.max()), "min_speed": float(sp.min()),
+         "pct": round((lo + hi) / len(sp) * 100, 4)}))
+    return out
+
+
 def _check_classes(sd, th):
     out = []
     if sd.window.empty or sd.window[CLASS].notna().sum() == 0:
@@ -276,8 +313,8 @@ def _check_notes(sd, th):
 
 
 _CHECKS = [_check_completeness, _check_gaps, _check_volume, _check_adt_vs_awdt,
-           _check_direction_balance, _check_speed_outliers, _check_classes,
-           _check_timestamps, _check_files, _check_notes]
+           _check_direction_balance, _check_speed_outliers, _check_device_range,
+           _check_classes, _check_timestamps, _check_files, _check_notes]
 
 
 def run_diagnostics(sd: "StudyData",

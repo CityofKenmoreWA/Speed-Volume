@@ -256,6 +256,7 @@ tunable in code without touching the checks themselves.
 | `single_direction` | info | Only one travel direction is present in the data. |
 | `direction_imbalance` | warning | Busier direction's share > `max_direction_share` (default **70 %**). |
 | `speed_outliers` | info / warning | Any speeds outside [`speed_min`, `speed_max`] mph (defaults **5**–**90**). **warning** if outliers ≥ 1 % of records, otherwise **info**. |
+| `speed_out_of_device_range` | warning | Any reading outside the counter's **rated measurement range** [`device_speed_min`, `device_speed_max`] (defaults **1.3**–**100** mph, from the Armadillo Tracker datasheet). Outside the instrument's specification, so such a value is an artifact rather than a vehicle — **one occurrence is enough**, regardless of share, and the study reads **moderate**. |
 | `class_distribution` | warning | Heavy-vehicle share ("Large") > **15 %**. |
 | `class_distribution` | info | All vehicles fall in a single class. |
 | `duplicate_records` | warning | > **40 %** of raw rows are fully-identical (timestamp + speed + class + direction) — possible data doubling. |
@@ -285,6 +286,7 @@ Severity order (used for sorting the findings table, worst first):
 | `low_volume_per_day` | `50` | `low_volume` |
 | `max_direction_share` | `0.70` | `direction_imbalance` |
 | `speed_min` / `speed_max` | `5.0` / `90.0` mph | `speed_outliers` |
+| `device_speed_min` / `device_speed_max` | `1.3` / `100.0` mph | `speed_out_of_device_range` |
 | `max_gap_hours` | `3.0` h | `data_gap` |
 | `max_daily_volume_ratio` | `3.0` | `erratic_volume` |
 
@@ -370,6 +372,31 @@ Each of these was a defect in the workbook, confirmed against the data and fixed
 Two further fixes were ours, not the Excel's: a window longer than 7 days produced
 **duplicate weekday columns** (2 studies), and an absent direction reported the default
 **7-day** window length rather than the real one.
+
+## The counter, and what it means for the numbers
+
+The fleet is the **Houston Radar Armadillo Tracker** (Doppler, bidirectional, three
+size classes). Three facts from its documentation shape how these statistics should
+be read:
+
+- **Per-vehicle speed resolution is 1 mph.** The Stats Analyzer manual: *"Individual
+  vehicle logging with 1 mph (or 1 Km/h) speed resolution"*. Every recorded speed in
+  the archive is a whole number, so the integer-grid percentile method is exact
+  rather than an approximation. Whether that 1 mph value is rounded or truncated is
+  **not documented** by the manufacturer.
+- **Stated accuracy for the average and 85th-percentile speed is ±0.6 mph**
+  (datasheet accuracy table, all four mounting configurations; overall speed error
+  0.4 %). Any argument about sub-mph conventions in the percentile calculation sits
+  *inside* the instrument's own error bar for that statistic, so it is not
+  recoverable precision — which is why the interpolation convention is left as it is.
+- **The recorded distribution is left-truncated at a device setting.** The factory
+  default minimum collection speed is 12 mph, and **567 of 745** studies show a
+  minimum recorded speed of exactly 12. So *average* and *median* speed describe
+  vehicles travelling at or above that floor, not all traffic. The 85th percentile,
+  living at the top of the distribution, is unaffected.
+
+The rated range is **1.3–100 mph**; readings outside it are flagged by the
+`speed_out_of_device_range` diagnostic (7 studies in the archive record 102–104 mph).
 
 ## Branding
 
