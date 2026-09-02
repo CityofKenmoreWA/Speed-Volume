@@ -7,21 +7,22 @@ hourly table (Report rows 31..54: weekday-85th, per-day counts, averages).
 Usage:  python tools/validate_all.py [--sample N] [--year YYYY]
 Prints flushed progress and a final summary; writes details to validate_results.csv.
 """
+import os
 import sys
 import warnings
 
 warnings.simplefilter("ignore")
-sys.path.insert(0, r"C:\Users\moshanreh\Desktop\Mohammad\Claude\Intersection")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 from openpyxl import load_workbook
 
-from traffic_diag.config import DIRECTION, TS, DEFAULT_ANALYSIS
+from traffic_diag.config import (DIRECTION, TS, DEFAULT_ANALYSIS,
+                                 DEFAULT_BASE as BASE, REPO_ROOT)
 from traffic_diag.discovery import find_studies
 from traffic_diag.metrics import DOW_NAMES, compute_direction_metrics
 from traffic_diag.study import load_study
 
-BASE = r"C:\Users\moshanreh\Desktop\Mohammad\Speed and Volume Studies"
 SCALAR_CELLS = {"B6": "p85_speed", "B7": "average_speed", "B8": "median_speed",
                 "B9": "max_speed", "B10": "adt", "B11": "average_weekday_traffic",
                 "B13": "total_vehicles"}
@@ -127,7 +128,7 @@ def main():
     print(f"SCALAR cells: {s_ok}/{s_tot} = {s_ok/max(1,s_tot)*100:.3f}%", flush=True)
     print(f"HOURLY cells: {h_ok}/{h_tot} = {h_ok/max(1,h_tot)*100:.3f}%", flush=True)
     df = pd.DataFrame(rows, columns=["study", "direction", "kind", "field", "python", "excel"])
-    df.to_csv(r"C:\Users\moshanreh\Desktop\Mohammad\Claude\Intersection\validate_results.csv", index=False)
+    df.to_csv(os.path.join(REPO_ROOT, "validate_results.csv"), index=False)
     mism = df[df.kind != "error"]
     print(f"Mismatched cells: {len(mism)} across {mism['study'].nunique()} studies", flush=True)
     if len(mism):

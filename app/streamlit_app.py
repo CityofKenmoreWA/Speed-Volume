@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from traffic_diag.catalog import (catalog_path, load_or_build_catalog,
                                   study_from_row)
 from traffic_diag.config import (DEFAULT_BASE, KENMORE_AMBER, KENMORE_NAVY,
-                                 LOGO_PATH, LOGO_WHITE_PATH)
+                                 LOGO_PATH, LOGO_WHITE_PATH, NO_DATA_BASE_MSG)
 from traffic_diag.discovery import maps_url
 from traffic_diag.figures import build_figures, fig_dfactor
 from traffic_diag.metrics import HOUR_LABELS
@@ -189,6 +189,9 @@ with st.sidebar:
     # The catalog behind it is refreshed out of band by the scheduled task, so the
     # dashboard is read-only with respect to the share.
     base = DEFAULT_BASE
+    if not base:
+        st.error(NO_DATA_BASE_MSG)
+        show_footer(); st.stop()
     if not os.path.isdir(base):
         st.error(f"Study folder is not reachable:  \n`{base}`  \n\n"
                  "Check that the server can see the share, then restart the app.")

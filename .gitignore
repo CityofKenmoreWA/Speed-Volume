@@ -40,3 +40,8 @@ deploy/KenmoreTrafficDashboard/traffic_diag/
 deploy/KenmoreTrafficDashboard/app/
 deploy/KenmoreTrafficDashboard/scripts/
 deploy/KenmoreTrafficDashboard/assets/
+
+# Per-machine path to the study data (see data_base.txt.example). Deliberately
+# not tracked: it differs per machine, and a path baked into the repo used to ship
+# a developer's home directory inside the IT handoff bundle.
+data_base.txt

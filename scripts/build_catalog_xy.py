@@ -18,12 +18,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from traffic_diag.catalog_xy import catalog_xy_path, refresh_catalog_xy  # noqa: E402
-from traffic_diag.config import DEFAULT_BASE  # noqa: E402
+from traffic_diag.config import DEFAULT_BASE, NO_DATA_BASE_MSG  # noqa: E402
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build the study catalog with lat/lon (WGS84).")
-    ap.add_argument("--base", default=os.environ.get("TRAFFIC_DATA_BASE", DEFAULT_BASE),
+    ap.add_argument("--base", default=DEFAULT_BASE,
                     help="Data root that holds the <year> folders.")
     ap.add_argument("--out", default=None,
                     help="Output CSV path (default: <base>/study_catalog_latlon.csv).")
@@ -31,6 +31,9 @@ def main() -> int:
                     help="skip computing avg/85th/ADT/AWDT (lat/lon still read).")
     args = ap.parse_args()
 
+    if not args.base:
+        print(f"[catalog-latlon] {NO_DATA_BASE_MSG}", file=sys.stderr)
+        return 1
     if not os.path.isdir(args.base):
         print(f"[catalog-latlon] data folder not found: {args.base}", file=sys.stderr)
         return 1

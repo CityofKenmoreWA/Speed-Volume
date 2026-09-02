@@ -69,9 +69,27 @@ Two directories, both overridable from **`run_dashboard.bat`** (edit the
 
 | Variable | Meaning | Default |
 |----------|---------|---------|
-| `TRAFFIC_DATA_BASE` | the **data** root holding the `<year>` folders (the only path outside the repo) | `…\Mohammad\Speed and Volume Studies` |
+| `TRAFFIC_DATA_BASE` | the **data** root holding the `<year>` folders (the only path outside the repo) | none — see below |
 | `APP_ROOT` | the app/repo root; anchors `reports/`, `assets/`, the catalog logic | the repo folder |
 | `TRAFFIC_REPORTS_DIR` | where generated reports are written | `<APP_ROOT>\reports` |
+
+### Where the data folder comes from
+
+There is **no built-in path**. The data root resolves per machine, first hit wins:
+
+1. the **`TRAFFIC_DATA_BASE`** environment variable — what `run_dashboard.bat` and the
+   server launcher set, so a server never needs anything else;
+2. a **`data_base.txt`** next to the app, holding the path on one line. Copy
+   `data_base.txt.example` and edit it. It is gitignored, so it stays on the machine
+   it describes;
+3. nothing — every entry point then stops and tells you how to configure it, rather
+   than guessing.
+
+`--base` still overrides everything on the command line.
+
+This used to be a hardcoded path to one developer's home directory. Whenever the
+environment variable went missing the app silently pointed there, named that person
+in the error message, and shipped their username inside the bundle handed to IT.
 
 Every CLI script also accepts `--base` to override the data folder inline.
 

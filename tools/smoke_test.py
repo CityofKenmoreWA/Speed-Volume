@@ -1,16 +1,17 @@
 """End-to-end smoke test of the backbone against verified Excel targets."""
+import os
 import sys
 
 import pandas as pd
 
-sys.path.insert(0, r"C:\Users\moshanreh\Desktop\Mohammad\Claude\Intersection")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from traffic_diag.discovery import find_studies, find_years
 from traffic_diag.study import load_study
 from traffic_diag.metrics import compute_direction_metrics
 from traffic_diag.config import DIRECTION
 
-BASE = r"C:\Users\moshanreh\Desktop\Mohammad\Speed and Volume Studies"
+from traffic_diag.config import DEFAULT_BASE as BASE   # env var -> data_base.txt
 TARGETS = {
     "total_vehicles": 1964, "average_speed": 25.134419551934826,
     "median_speed": 25.0, "max_speed": 47.0, "adt": 280.57142857142856,

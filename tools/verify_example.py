@@ -2,10 +2,18 @@
 
 Locks the statistical algorithms before they go into traffic_diag.metrics.
 """
+import os
+import sys
+
 import numpy as np
 import pandas as pd
 
-RAW = r"C:\Users\moshanreh\Desktop\Mohammad\Speed and Volume Studies\2025\56thAv_so_190thSt_20251003\56thAv_so_190thSt_20251003_Raw.csv"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from traffic_diag.config import DEFAULT_BASE   # env var -> data_base.txt
+
+STUDY = "56thAv_so_190thSt_20251003"
+RAW = os.path.join(DEFAULT_BASE, "2025", STUDY, STUDY + "_Raw.csv")
 
 # Excel 'Merged Set up' targets (cached values).
 TARGETS = {

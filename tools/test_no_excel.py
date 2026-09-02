@@ -11,13 +11,13 @@ import warnings
 from datetime import date
 
 warnings.simplefilter("ignore")
-sys.path.insert(0, r"C:\Users\moshanreh\Desktop\Mohammad\Claude\Intersection")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from traffic_diag.discovery import Study, find_studies
 from traffic_diag.pipeline import process_study
 from traffic_diag.report import write_excel_report, write_html_report, write_pdf_report
 
-BASE = r"C:\Users\moshanreh\Desktop\Mohammad\Speed and Volume Studies"
+from traffic_diag.config import DEFAULT_BASE as BASE   # env var -> data_base.txt
 
 # Take a real study, copy ONLY its raw CSV + notes TXT into a clean folder.
 src = [s for s in find_studies(BASE, year=2025) if s.location == "56thAv_so_190thSt"][0]

@@ -1,0 +1,13 @@
+# Per-machine path to the study-data folder: the one holding the <year> folders.
+#
+# Copy this file to  data_base.txt  and put your path on one line below.
+# data_base.txt is gitignored, so it stays on this machine and never reaches the
+# repo or the handoff bundle.
+#
+# The TRAFFIC_DATA_BASE environment variable wins over this file when it is set -
+# that is what run_dashboard.bat and the server launcher use, so a server needs
+# no data_base.txt at all.
+#
+# Lines starting with # are ignored. Quotes and %VARS% are handled.
+
+C:\path\to\Speed and Volume Studies

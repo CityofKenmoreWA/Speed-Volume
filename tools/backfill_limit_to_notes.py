@@ -24,7 +24,7 @@ import warnings
 warnings.simplefilter("ignore")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from traffic_diag.config import DEFAULT_BASE
+from traffic_diag.config import DEFAULT_BASE, NO_DATA_BASE_MSG  # noqa: F401
 from traffic_diag.discovery import _LIMIT_RE
 from traffic_diag.study import read_speed_limit_xlsx
 

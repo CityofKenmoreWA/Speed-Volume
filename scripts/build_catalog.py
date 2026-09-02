@@ -22,18 +22,21 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from traffic_diag.catalog import catalog_path, refresh_catalog
-from traffic_diag.config import DEFAULT_BASE
+from traffic_diag.config import DEFAULT_BASE, NO_DATA_BASE_MSG
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build/refresh the study catalog table.")
-    ap.add_argument("--base", default=os.environ.get("TRAFFIC_DATA_BASE", DEFAULT_BASE),
+    ap.add_argument("--base", default=DEFAULT_BASE,
                     help="Data root that holds the <year> folders.")
     ap.add_argument("--no-metrics", action="store_true",
                     help="skip computing avg/85th/ADT/AWDT (structure only)")
     args = ap.parse_args()
 
     stamp = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
+    if not args.base:
+        print(f"[{stamp}] {NO_DATA_BASE_MSG}", file=sys.stderr)
+        return 1
     if not os.path.isdir(args.base):
         print(f"[{stamp}] data folder not reachable: {args.base}", file=sys.stderr)
         return 1
