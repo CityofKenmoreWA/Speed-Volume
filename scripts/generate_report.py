@@ -42,18 +42,67 @@ def _select(base, year, location):
     return studies
 
 
-def _emit(result, outdir, fmt):
+# --format spellings -> the set of formats they select.
+FORMATS = {
+    "html": {"html"},
+    "excel": {"excel"},
+    "pdf": {"pdf"},
+    "both": {"html", "excel"},
+    "excel+pdf": {"excel", "pdf"},
+    "all": {"html", "excel", "pdf"},
+}
+
+WRITERS = {
+    "html": (write_html_report, "html"),
+    "excel": (write_excel_report, "xlsx"),
+    "pdf": (write_pdf_report, "pdf"),
+}
+
+# Suffix for --in-place output. It must NOT end in "_Report", because:
+#   * the study folders already hold a legacy <study>_Report.xlsx / .pdf, and
+#     Windows filenames are case-insensitive - writing "<study>_report.xlsx"
+#     next to "<study>_Report.xlsx" does not create a second file, it destroys
+#     the first one;
+#   * catalog.FINGERPRINT_GLOBS and Study.report_xlsx both glob "*_Report.xlsx",
+#     so a file ending that way would be mistaken for the legacy workbook (used
+#     to resolve the posted speed limit) and would change every study's
+#     fingerprint, forcing a full catalog recompute.
+DEFAULT_IN_PLACE_SUFFIX = "Analysis"
+
+
+def _collides_with_legacy(stem: str) -> bool:
+    """True if this stem would be seen as the legacy '*_Report' file."""
+    return stem.lower().endswith("_report")
+
+
+def _emit(result, outdir, formats, in_place=False,
+          suffix=DEFAULT_IN_PLACE_SUFFIX, overwrite=False):
+    """Write the requested formats; return (written, skipped).
+
+    Default: <outdir>/<study_id>/<study_id>_report.<ext>.
+    --in-place: into the study's own folder as <study_id>_<suffix>.<ext>, and
+    never over an existing file unless ``overwrite``.
+    """
     sid = result.study.study_id
-    sub = os.path.join(outdir, sid)
-    os.makedirs(sub, exist_ok=True)
-    made = []
-    if fmt in ("html", "both", "all"):
-        made.append(write_html_report(result, os.path.join(sub, f"{sid}_report.html")))
-    if fmt in ("excel", "both", "all"):
-        made.append(write_excel_report(result, os.path.join(sub, f"{sid}_report.xlsx")))
-    if fmt in ("pdf", "all"):
-        made.append(write_pdf_report(result, os.path.join(sub, f"{sid}_report.pdf")))
-    return made
+    if in_place:
+        target, stem = result.study.path, f"{sid}_{suffix}"
+    else:
+        target, stem = os.path.join(outdir, sid), f"{sid}_report"
+        os.makedirs(target, exist_ok=True)
+
+    written, skipped = [], []
+    for name in ("html", "excel", "pdf"):
+        if name not in formats:
+            continue
+        writer, ext = WRITERS[name]
+        path = os.path.join(target, f"{stem}.{ext}")
+        # os.path.exists is case-insensitive on Windows, which is exactly the
+        # check needed here - see the note on DEFAULT_IN_PLACE_SUFFIX.
+        if in_place and not overwrite and os.path.exists(path):
+            skipped.append(path)
+            continue
+        written.append(writer(result, path))
+    return written, skipped
 
 
 def main(argv=None):
@@ -67,7 +116,15 @@ def main(argv=None):
     p.add_argument("--trend", action="store_true",
                    help="with --location: write a per-location over-time stats CSV (all years)")
     p.add_argument("--out", default=DEFAULT_OUT, help="output directory for reports")
-    p.add_argument("--format", choices=["html", "excel", "pdf", "both", "all"], default="both")
+    p.add_argument("--in-place", action="store_true",
+                   help="write into each study's OWN folder instead of --out, as "
+                        f"<study>_{DEFAULT_IN_PLACE_SUFFIX}.<ext>. Existing files are "
+                        "skipped, so a re-run resumes where it stopped.")
+    p.add_argument("--suffix", default=DEFAULT_IN_PLACE_SUFFIX,
+                   help=f"filename suffix for --in-place (default {DEFAULT_IN_PLACE_SUFFIX})")
+    p.add_argument("--overwrite", action="store_true",
+                   help="with --in-place, replace files this tool already wrote")
+    p.add_argument("--format", choices=sorted(FORMATS), default="both")
     p.add_argument("--speed-limit", type=float, default=None,
                    help="override the posted speed limit (mph). If omitted, resolved per "
                         "study: Notes 'Limit:' line -> existing Excel report -> default 25.")
@@ -129,16 +186,38 @@ def main(argv=None):
         print("No matching studies.")
         return 1
 
+    formats = FORMATS[args.format]
+
+    if args.in_place:
+        stem_probe = f"x_{args.suffix}"
+        if _collides_with_legacy(stem_probe):
+            p.error(f"--suffix {args.suffix!r} would produce '<study>_{args.suffix}.xlsx', "
+                    f"which Windows treats as the existing '<study>_Report.xlsx' and would "
+                    f"destroy it. Choose a suffix that does not end in 'Report'.")
+        print(f"Writing into each study's own folder as <study>_{args.suffix}.<ext>; "
+              f"existing files are {'REPLACED' if args.overwrite else 'skipped'}.")
+
+    n_written = n_skipped = n_err = 0
     for s in studies:
         try:
             result = process_study(s, speed_limit=args.speed_limit)
-            made = _emit(result, args.out, args.format)
+            made, skipped = _emit(result, args.out, formats, in_place=args.in_place,
+                                  suffix=args.suffix, overwrite=args.overwrite)
+            n_written += len(made)
+            n_skipped += len(skipped)
             d = result.diagnostics
+            note = ", ".join(os.path.basename(m) for m in made) or "nothing new"
+            if skipped:
+                note += f"  (skipped {len(skipped)} already there)"
             print(f"[OK] {s.study_id}: total={result.merged.total} "
                   f"85th={result.merged.design_speed:.1f} risk={d.risk if d else '-'} "
-                  f"-> {', '.join(os.path.relpath(m) for m in made)}")
+                  f"-> {note}")
         except Exception as e:
+            n_err += 1
             print(f"[ERR] {s.study_id}: {e}")
+    if len(studies) > 1:
+        print(f"\n{len(studies)} studies: {n_written} file(s) written, "
+              f"{n_skipped} skipped, {n_err} error(s).")
     return 0
 
 
