@@ -142,9 +142,40 @@ single-line invocation — copy/paste, edit the values, run.
 ### `scripts/generate_report.py` — reports, listing, validation, trends
 
 Flags: `--base PATH` · `--year YEAR` · `--location SUBSTR` · `--all` · `--list` ·
-`--validate` · `--trend` · `--out DIR` · `--format {html,excel,pdf,both,all}` (default
-`both` = HTML+Excel; `all` adds PDF) · `--speed-limit N` · `--include-compromised`
-*(no-op today — see docs/CLI.md Caveats)*.
+`--validate` · `--trend` · `--out DIR` · `--in-place` · `--suffix NAME` · `--overwrite` ·
+`--format {html,excel,pdf,both,excel+pdf,all}` (default `both` = HTML+Excel) ·
+`--speed-limit N` · `--include-compromised` *(no-op today — see docs/CLI.md Caveats)*.
+
+#### Writing reports into the study folders (`--in-place`)
+
+By default reports land in `reports/<study>/`. `--in-place` writes them into each
+study's **own folder on the share** instead, as `<study>_Analysis.<ext>`:
+
+```bash
+.venv\Scripts\python.exe scripts\generate_report.py --all --in-place --format excel+pdf
+```
+
+Existing files are **skipped**, never replaced, so the command is resumable — re-run
+it and it picks up where it stopped. `--overwrite` replaces files *this tool* wrote;
+it still cannot touch the legacy ones.
+
+> **Why the `_Analysis` suffix, and don't change it to `_Report`.** Study folders
+> already contain a legacy `<study>_Report.xlsx` and `<study>_Report.pdf`. Windows
+> filenames are case-insensitive, so writing `<study>_report.xlsx` beside
+> `<study>_Report.xlsx` does not create a second file — **it destroys the first
+> one**. That is also why you must not simply point `--out` at a study folder.
+> Beyond the collision, anything ending in `_Report.xlsx` is globbed by
+> `Study.report_xlsx` (which resolves the posted speed limit) and by
+> `catalog.FINGERPRINT_GLOBS`, so it would be mistaken for the legacy workbook and
+> would change every study's fingerprint, forcing a full catalog recompute.
+> `--suffix` is validated and refuses anything ending in "Report".
+
+**Budget for a full run:** roughly **75–90 minutes and ~10 GB** across ~750 studies.
+Almost all of that is PDF — Excel is ~29 KB per study, PDFs average ~13 MB because
+the installation photos are embedded at their original resolution (two 4 MB phone
+photos is typical). Lowering `TRAFFIC_FIGURE_DPI` barely helps, since it only
+shrinks the charts. Use `--format excel` (~22 MB total) if the PDFs are not needed,
+or `--year YYYY` to go a year at a time.
 
 ```bash
 # discover
