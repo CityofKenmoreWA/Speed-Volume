@@ -22,7 +22,7 @@ import matplotlib
 matplotlib.use("Agg")  # safe for servers / Streamlit / batch
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 from .config import FIGURE_DPI, SPEED, TS, AnalysisConfig, DEFAULT_ANALYSIS
 from .metrics import (DirectionMetrics, DOW_NAMES, HOUR_LABELS,
@@ -37,6 +37,29 @@ matplotlib.rcParams["savefig.dpi"] = FIGURE_DPI
 _BAR = "#4f81bd"      # Excel default blue
 _LINE = "#4f81bd"
 _WEEKEND = "#e08214"  # weekend bars (orange)
+
+# Every chart that draws value labels above its marks needs vertical room for them,
+# or the topmost label is clipped by the axes. These are multipliers on the tallest
+# value. Bars carry a label directly above the bar; the line chart's labels sit a
+# little higher still, so it gets more.
+_BAR_HEADROOM = 1.18
+_LINE_HEADROOM = 1.28
+
+# Legends that sit inside the axes are drawn over the data, so they need a solid
+# backing to stay readable where they do overlap.
+_LEGEND_KW = dict(fontsize=8, framealpha=0.92, facecolor="white", edgecolor="#bbbbbb")
+
+
+def _headroom(ax, values, factor, floor=1.0):
+    """Set a 0-based y-range with room above the tallest value for its label.
+
+    Called by every chart that labels its marks. Guards the all-zero case, where
+    ``max * factor`` is 0 and matplotlib would draw a degenerate axis.
+    """
+    finite = [float(v) for v in values
+              if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    top = (max(finite) * factor) if finite else 0.0
+    ax.set_ylim(0, top if top > 0 else floor)
 
 
 def _design_speed_counts(window, m: DirectionMetrics, cfg):
@@ -79,7 +102,9 @@ def fig_percentile_speed(window, m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
             ax.axvline(m.design_speed, color="red", lw=1.5)
             ax.plot([m.design_speed], [85], "o", color="red", ms=5,
                     label=f"85th pct = {m.design_speed:.1f} mph")
-            ax.legend(fontsize=8, loc="lower right")
+            # Lower right: the curve has already reached 100% out there, so this
+            # corner is the one part of the axes the data never occupies.
+            ax.legend(loc="lower right", **_LEGEND_KW)
     ax.set_xlim(0, 100); ax.set_ylim(0, 100)
     ax.set_xlabel("Speed (mph)"); ax.set_ylabel("Percentile (%)")
     ax.set_title("Percentile Speed")
@@ -90,7 +115,14 @@ def fig_percentile_speed(window, m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
 
 def fig_weekday_p85(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
     """Per-hour weekday 85th-percentile speed as a LINE chart (per supervisor)."""
-    fig, ax = plt.subplots(figsize=(9, 4))
+    # Taller than the other 9x4 charts, and laid out by constrained_layout: the
+    # full-width hour labels ("12:00 AM - 1:00 AM", rotated) take about an inch on
+    # their own and the limit legend sits below them again. Fixed margins cannot
+    # express that, because the PDF re-renders this figure at ~two thirds size —
+    # fractional margins shrink with it while the label text does not, and the
+    # legend ends up on top of the axis title. constrained_layout re-solves the
+    # margins at every draw, so it holds at any size.
+    fig, ax = plt.subplots(figsize=(9, 4.4), layout="constrained")
     vals = [None if (m.hourly_weekday_p85 is None or m.hourly_weekday_p85.get(h) is None
                      or np.isnan(m.hourly_weekday_p85.get(h))) else float(m.hourly_weekday_p85.get(h))
             for h in range(24)]
@@ -98,21 +130,31 @@ def fig_weekday_p85(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
     ax.plot(range(24), y, "-o", color=_LINE, ms=4, lw=1.6)
     if m.speed_limit:
         ax.axhline(m.speed_limit, color="#444", ls="--", lw=1, label=f"Limit = {m.speed_limit:g}")
-        ax.legend(fontsize=8)
+    # Value labels alternate above/below the marker. At 24 hours the points sit
+    # close together and a single row of labels collides with its own neighbours;
+    # staggering them keeps every reading legible.
     for h, v in enumerate(vals):
-        if v is not None:
-            ax.annotate(f"{v:.1f}", (h, v), textcoords="offset points", xytext=(0, 4),
-                        ha="center", fontsize=6)
+        if v is None:
+            continue
+        above = (h % 2 == 0)
+        ax.annotate(f"{v:.1f}", (h, v), textcoords="offset points",
+                    xytext=(0, 6 if above else -11), ha="center", fontsize=6)
     ax.set_xticks(range(24)); ax.set_xticklabels(HOUR_LABELS, rotation=90, fontsize=6)
     ax.set_ylabel("Percentile Speed (MPH)"); ax.set_xlabel("Time")
-    # Robust y-range: 0 baseline + ~15% headroom above the tallest point/limit so the
-    # value labels are never clipped.
-    finite = [v for v in vals if v is not None]
-    top = (max(finite + [m.speed_limit]) if finite else m.speed_limit) * 1.15
-    ax.set_ylim(0, top)
+    # 0 baseline + headroom above the tallest point (or the limit line, whichever
+    # wins) so the staggered labels are never clipped.
+    _headroom(ax, list(vals) + [m.speed_limit], _LINE_HEADROOM, floor=10.0)
+    # Default ticks on a 0..40 range give only 0 and 20; ask for a usable number.
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
     ax.set_title("Weekday 85th Percentile Speed Distribution")
     ax.grid(True, axis="y", alpha=0.3)
-    fig.tight_layout()
+    if m.speed_limit:
+        # Below the axes, not in a corner of them. Both top corners hold real data
+        # here — overnight and late-evening 85ths run high — so an in-axes legend
+        # covered the very readings the chart exists to show. "outside" is what
+        # makes constrained_layout reserve the strip rather than draw over it.
+        fig.legend(loc="outside lower center", fontsize=8, frameon=False)
+    fig.td_fixed_layout = True   # see _pdf_figure: do not re-run tight_layout
     return fig
 
 
@@ -153,7 +195,7 @@ def fig_dfactor(metrics: dict, cfg=DEFAULT_ANALYSIS, dir_names: dict | None = No
     pvk, svk = pv[keep], sv[keep]
     pos = np.arange(len(keep))
 
-    fig, ax = plt.subplots(figsize=(9, 5.4))
+    fig, ax = plt.subplots(figsize=(9, 5.4), layout="constrained")
     ax.bar(pos, pvk, color="#4f81bd", label=f"{pn} (primary, ▲)")
     ax.bar(pos, -svk, color="#e08214", label=f"{sn} (▼)")
     ax.axhline(0, color="black", lw=0.8)
@@ -178,13 +220,19 @@ def fig_dfactor(metrics: dict, cfg=DEFAULT_ANALYSIS, dir_names: dict | None = No
     ax2.set_ylabel("D-Factor (0–1)")
 
     overall = pv.sum() / (pv.sum() + sv.sum()) if (pv.sum() + sv.sum()) > 0 else float("nan")
-    # Legend BELOW the plot so it never overlaps the bars or the D-factor line.
+    ax.set_title(f"D-Factor by Time of Day  (primary {pn}, overall D = {overall:.2f})")
+
+    # Legend below the whole figure rather than anchored to the axes. An
+    # axes-relative anchor has to guess how much room the rotated hour labels and
+    # the "Time" xlabel need underneath, and it guessed wrong — the legend was
+    # drawn straight through the xlabel. "outside" hands that sum to
+    # constrained_layout, which also re-solves it when the PDF shrinks the canvas.
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + l2, fontsize=8, ncol=3, frameon=False,
-              loc="upper center", bbox_to_anchor=(0.5, -0.42))
-    ax.set_title(f"D-Factor by Time of Day  (primary {pn}, overall D = {overall:.2f})")
-    fig.subplots_adjust(bottom=0.40, top=0.92, left=0.09, right=0.91)
+    fig.legend(h1 + h2, l1 + l2, fontsize=8, ncol=3, frameon=False,
+               loc="outside lower center")
+    # constrained_layout owns this figure's margins; tight_layout would fight it.
+    fig.td_fixed_layout = True
     return fig
 
 
@@ -198,7 +246,7 @@ def fig_time_distribution(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
     _bar_labels(ax, bars, "%.0f")
     ax.set_xticks(range(24)); ax.set_xticklabels(HOUR_LABELS, rotation=90, fontsize=6)
     ax.set_ylabel("Average Volume"); ax.set_xlabel("Time")
-    ax.set_ylim(0, (max(vals) if vals else 1) * 1.18 or 1)   # headroom so bar labels aren't clipped
+    _headroom(ax, vals, _BAR_HEADROOM)   # room above the bars for their labels
     ax.set_title("Time Distribution")
     fig.tight_layout()
     return fig
@@ -215,10 +263,12 @@ def fig_daily_distribution(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
     _bar_labels(ax, bars, "%.0f")
     ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
     ax.set_ylabel("Vehicle Counts"); ax.set_xlabel("Days")
-    ax.set_ylim(0, (max(vals) if vals else 1) * 1.12 or 1)
+    _headroom(ax, vals, _BAR_HEADROOM)
     from matplotlib.patches import Patch
+    # Upper right, above the bars: the headroom keeps this band clear, and the
+    # opaque backing covers the case where a Sunday bar runs tall.
     ax.legend(handles=[Patch(color=_BAR, label="Weekday"), Patch(color=_WEEKEND, label="Weekend")],
-              fontsize=8, loc="upper right")
+              loc="upper right", **_LEGEND_KW)
     ax.set_title("Daily Distribution")
     fig.tight_layout()
     return fig
@@ -238,9 +288,12 @@ def fig_speed_distribution(window, m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
     if m.speed_limit:
         ax.axvline(m.speed_limit / 5.0 - 0.5, color="red", lw=1.6,
                    label=f"Speed limit = {m.speed_limit:g}")
-        ax.legend(fontsize=8)
+        ax.legend(loc="upper right", **_LEGEND_KW)
     ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, rotation=90, fontsize=6)
     ax.set_ylabel("Vehicle Counts"); ax.set_xlabel("Speed (mph)")
+    # This chart set no y-range at all, so the tallest bar reached the top of the
+    # axes and its count label was clipped off the figure.
+    _headroom(ax, counts, _BAR_HEADROOM)
     ax.set_title("Speed Distribution")
     fig.tight_layout()
     return fig

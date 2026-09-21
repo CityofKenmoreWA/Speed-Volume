@@ -18,6 +18,7 @@ from jinja2 import Template
 from . import styling
 from .config import (DIRECTION, FIGURE_DPI, AnalysisConfig, DEFAULT_ANALYSIS,
                      KENMORE_AMBER, KENMORE_NAVY, KENMORE_TEAL, LOGO_PATH)
+from .diagnostics import quality_label
 from .discovery import maps_url
 from .figures import build_figures, fig_dfactor
 from .metrics import HOUR_LABELS
@@ -74,6 +75,48 @@ def _pct_rows_colored(m, limit):
 
 _SEV_COLOR = {"error": "#d9534f", "warning": "#f0ad4e", "info": "#5bc0de", "ok": "#5cb85c"}
 _RISK_COLOR = {"high": "#d9534f", "moderate": "#f0ad4e", "low": "#5cb85c"}
+
+# How a study the agency has filed as not-trustworthy is announced. This is the
+# folder it lives in, not a conclusion the diagnostics reached — a compromised
+# study can still come back with no data issues found, so the two are reported
+# separately and neither is inferred from the other.
+_STATUS_NOTICE = {
+    "compromised": ("COMPROMISED STUDY",
+                    "Filed under _Compromised Studies: something about the deployment "
+                    "(weather, parking, a blocked sensor) makes this count "
+                    "unrepresentative. The figures below are kept for reference and "
+                    "should not be used on their own."),
+    "incomplete": ("INCOMPLETE STUDY",
+                   "Filed under _Incomplete: the count is still running or was cut "
+                   "short, so these figures are provisional."),
+}
+
+
+def status_notice(study):
+    """``(headline, explanation)`` for a flagged study, or None for a normal one."""
+    return _STATUS_NOTICE.get(getattr(study, "status", "normal"))
+
+
+# Column names as they should READ in a rendered table. The DataFrame keeps the
+# short forms — validate.py matches Excel headers against those exact names — so
+# only the printed header is spelled out. This makes the volume tables agree with
+# the speed tables, which already say "Weekday Overall" in full.
+_COL_DISPLAY = {"Weekday Avg": "Weekday Average", "Weekend Avg": "Weekend Average"}
+
+
+def display_name(col) -> str:
+    """The header text for one column (see ``_COL_DISPLAY``)."""
+    return _COL_DISPLAY.get(str(col), str(col))
+
+
+def display_columns(mat):
+    """``mat`` with its summary columns renamed for display only.
+
+    Returns a renamed copy; the caller's frame is untouched. Safe to use before
+    styling, because the group-divider columns ("Average" / "Overall") are not
+    renamed and so are still found by name.
+    """
+    return mat.rename(columns=_COL_DISPLAY)
 _SL_LABEL = {"input": "manual input", "excel": "existing Excel report",
              "notes": "Notes file", "default": "default"}
 # Order figures appear in reports (matches the legacy report layout).
@@ -151,7 +194,7 @@ def _hourly_tables_html(m, limit) -> str:
     for title, mat, kind, grp in _hourly_specs(m):
         if mat is None:
             continue
-        t = mat.copy()
+        t = display_columns(mat)
         t.index = [HOUR_LABELS[h] if h < len(HOUR_LABELS) else str(h) for h in t.index]
         if kind == "speed":
             sty = styling.style_speed(t, limit).format(precision=2)
@@ -185,6 +228,9 @@ _HTML = Template("""<!DOCTYPE html><html><head><meta charset="utf-8">
  .letterhead img{height:74px;width:auto}
  .lh-city{font-size:22px;font-weight:700;color:#0E1E37;letter-spacing:.5px;line-height:1.1}
  .lh-sub{font-size:12px;color:#016666;text-transform:uppercase;letter-spacing:1px}
+ .statusban{border:2px solid #d9534f;background:#fdf0f0;color:#8a1f1f;border-radius:4px;
+            padding:8px 12px;margin:8px 0 12px;font-size:13px}
+ .statusban b{display:block;font-size:14px;letter-spacing:.5px;margin-bottom:2px}
 </style></head><body>
 {% if logo %}<div class="letterhead">
  <img src="{{ logo }}" alt="City of Kenmore">
@@ -192,6 +238,7 @@ _HTML = Template("""<!DOCTYPE html><html><head><meta charset="utf-8">
  <div class="lh-sub">Traffic Study Diagnostics &amp; Report</div></div>
 </div>{% endif %}
 <h1>{{ title }}</h1>
+{% if status_head %}<div class="statusban"><b>&#9888; {{ status_head }}</b>{{ status_body }}</div>{% endif %}
 <div class="meta">
  Location: <b>{{ location }}</b> &nbsp;|&nbsp; Directions: {{ inc }} (in) / {{ out }} (out)
  &nbsp;|&nbsp; Speed limit: {{ speed_limit }} mph ({{ sl_source }})<br>
@@ -215,7 +262,7 @@ _HTML = Template("""<!DOCTYPE html><html><head><meta charset="utf-8">
 {% endif %}
 
 <h2>Data Quality Diagnostics
-  &nbsp;<span class="risk" style="background:{{ risk_color }}">{{ risk|upper }} RISK</span></h2>
+  &nbsp;<span class="risk" style="background:{{ risk_color }}">{{ risk_label }}</span></h2>
 {% if findings %}<ul class="findings">
 {% for f in findings %}<li><span class="sev" style="color:{{ f.color }}">[{{ f.severity|upper }}]</span>
  {{ f.category }}: {{ f.message }}</li>{% endfor %}
@@ -297,8 +344,12 @@ def build_html_report(result, cfg: AnalysisConfig = DEFAULT_ANALYSIS, directions
     findings = [{"category": f.category, "severity": f.severity, "message": f.message,
                  "color": _SEV_COLOR.get(f.severity, "#777")}
                 for f in (diag.findings if diag else [])]
+    notice = status_notice(sd.study)
     return _HTML.render(
-        title=f"Speed & Volume Study — {sd.study.location}",
+        title=(f"Speed & Volume Study — {sd.study.location}"
+               + (f"  [{notice[0]}]" if notice else "")),
+        status_head=(notice[0] if notice else ""),
+        status_body=(notice[1] if notice else ""),
         logo=_img_file_data_uri(LOGO_PATH),
         location=sd.study.location, inc=sd.notes.get("incoming") or "?",
         out=sd.notes.get("outgoing") or "?", speed_limit=f"{sd.speed_limit:g}",
@@ -313,6 +364,7 @@ def build_html_report(result, cfg: AnalysisConfig = DEFAULT_ANALYSIS, directions
         loc_imgs=[u for u in (_img_file_data_uri(p) for p in sd.study.loc_photos) if u],
         map_img=_img_file_data_uri(sd.study.map_image),
         risk=(diag.risk if diag else "unknown"),
+        risk_label=quality_label(diag.risk if diag else "unknown"),
         risk_color=_RISK_COLOR.get(diag.risk if diag else "", "#777"),
         findings=findings, dirs=dirs, speed_rows=speed_rows, volume_rows=volume_rows,
         dfactor_img=dfactor_img, sections=sections,
@@ -360,7 +412,12 @@ def _pdf_figure(fig, path, avail_w, dpi=FIGURE_DPI):
     target_in = avail_w * PDF_FIG_WIDTH_FRAC / inch
     w0, h0 = fig.get_size_inches()
     fig.set_size_inches(target_in, h0 * target_in / w0)
-    fig.tight_layout()
+    # A figure that reserved its own margins (currently the D-factor chart, which
+    # keeps a band at the bottom for its legend) must not be re-laid-out here:
+    # tight_layout does not know about a figure-level legend and would reclaim
+    # that band, dropping the legend back on top of the axis labels.
+    if not getattr(fig, "td_fixed_layout", False):
+        fig.tight_layout()
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
 
     # bbox_inches="tight" trims whitespace, so read the real pixel size back and
@@ -376,6 +433,94 @@ def _pdf_figure(fig, path, avail_w, dpi=FIGURE_DPI):
 # --------------------------------------------------------------------------- #
 # PDF (reportlab)
 # --------------------------------------------------------------------------- #
+def _section_doc_template(base_cls):
+    """``base_cls`` subclass that records which section each page belongs to.
+
+    Needed because a figure can land several pages away from the heading that
+    introduced it: a reader looking at a bare "Speed Distribution" chart has no
+    way to tell whether it is the Merged view or one of the directions. The
+    template notes the heading in force as each page is laid out, and the canvas
+    reprints it in the running header.
+    """
+    class SectionDocTemplate(base_cls):
+        def __init__(self, *args, **kwargs):
+            self.section_by_page: dict[int, str] = {}
+            super().__init__(*args, **kwargs)
+
+        def afterFlowable(self, flowable):
+            mark = getattr(flowable, "td_section", None)
+            # First marker on a page wins. Every section starts with a PageBreak,
+            # so the heading is the first thing drawn on its page; a later marker
+            # on the same page would be a section that only just began at the foot.
+            if mark and self.page not in self.section_by_page:
+                self.section_by_page[self.page] = mark
+
+    return SectionDocTemplate
+
+
+def _numbered_canvas(header_left: str, section_by_page: dict, default_section: str):
+    """Canvas class that stamps a running header and a "Page N of M" footer.
+
+    The total page count is only known once the whole document has been laid out,
+    so an ``onPage`` callback cannot print it. This buffers each page's state and
+    draws the furniture during ``save()``, when both the total and the finished
+    ``section_by_page`` map are available.
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.units import inch
+    from reportlab.pdfgen import canvas as _canvas
+
+    def section_for(page: int) -> str:
+        """The heading in force on ``page`` — the nearest one at or before it,
+        since a page of figures carries no marker of its own."""
+        marked = [p for p in section_by_page if p <= page]
+        return section_by_page[max(marked)] if marked else default_section
+
+    class NumberedCanvas(_canvas.Canvas):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._saved_pages = []
+
+        def showPage(self):
+            self._saved_pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total = len(self._saved_pages)
+            for state in self._saved_pages:
+                self.__dict__.update(state)
+                self._draw_furniture(total)
+                super().showPage()
+            super().save()
+
+        def _draw_furniture(self, total):
+            w, h = letter
+            self.saveState()
+            # Page 1 already carries the full letterhead, so the running header
+            # starts on page 2 — otherwise it just repeats what is beneath it.
+            if self._pageNumber > 1:
+                self.setFont("Helvetica", 7.5)
+                self.setFillColor(colors.HexColor("#666666"))
+                self.drawString(0.6 * inch, h - 0.44 * inch, header_left)
+                # The section, right-aligned and bold: on a page that holds only
+                # charts this is the sole indication of which direction they show.
+                self.setFont("Helvetica-Bold", 8.5)
+                self.setFillColor(colors.HexColor(KENMORE_NAVY))
+                self.drawRightString(w - 0.6 * inch, h - 0.44 * inch,
+                                     section_for(self._pageNumber))
+                self.setStrokeColor(colors.HexColor(KENMORE_AMBER))
+                self.setLineWidth(0.8)
+                self.line(0.6 * inch, h - 0.52 * inch, w - 0.6 * inch, h - 0.52 * inch)
+            self.setFont("Helvetica", 7.5)
+            self.setFillColor(colors.HexColor("#666666"))
+            self.drawCentredString(w / 2.0, 0.38 * inch,
+                                   f"City of Kenmore  ·  Page {self._pageNumber} of {total}")
+            self.restoreState()
+
+    return NumberedCanvas
+
+
 def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
                      directions=None) -> str:
     """Print-ready PDF with a Merged section and a Directional section per direction."""
@@ -387,8 +532,9 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import (HRFlowable, Image, PageBreak, Paragraph,
-                                    SimpleDocTemplate, Spacer, Table, TableStyle)
+    from reportlab.platypus import (HRFlowable, Image, KeepTogether, PageBreak,
+                                    Paragraph, SimpleDocTemplate, Spacer, Table,
+                                    TableStyle)
 
     sd = result.data
     directions = directions or list(result.metrics)
@@ -397,9 +543,12 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
     h2 = ParagraphStyle("h2", parent=styles["Heading2"], textColor=colors.HexColor(KENMORE_NAVY))
     small = ParagraphStyle("small", parent=styles["Normal"], fontSize=8, leading=10)
 
-    doc = SimpleDocTemplate(path, pagesize=letter, leftMargin=0.6 * inch, rightMargin=0.6 * inch,
-                            topMargin=0.6 * inch, bottomMargin=0.6 * inch,
-                            title=f"Speed & Volume Study — {sd.study.location}")
+    # Top and bottom margins leave room for the running header and the page-number
+    # footer that _numbered_canvas draws outside the text column.
+    doc = _section_doc_template(SimpleDocTemplate)(
+        path, pagesize=letter, leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+        topMargin=0.75 * inch, bottomMargin=0.65 * inch,
+        title=f"Speed & Volume Study — {sd.study.location}")
     avail_w = doc.width
     m0 = result.merged
 
@@ -416,10 +565,21 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
         colWidths=[1.0 * inch, avail_w - 1.0 * inch])
     letterhead.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                                     ("LEFTPADDING", (0, 0), (0, 0), 0)]))
+    notice = status_notice(sd.study)
     flow = [letterhead,
             HRFlowable(width="100%", thickness=3, color=colors.HexColor(KENMORE_AMBER),
                        spaceBefore=3, spaceAfter=8),
-            Paragraph(f"Speed &amp; Volume Study — {sd.study.location}", styles["Title"])]
+            Paragraph(f"Speed &amp; Volume Study — {sd.study.location}"
+                      + (f"<br/><font size=12 color='#8a1f1f'>[{notice[0]}]</font>"
+                         if notice else ""),
+                      styles["Title"])]
+    if notice:
+        ban = ParagraphStyle("statusban", parent=small, fontSize=8.5, leading=11,
+                             textColor=colors.HexColor("#8a1f1f"),
+                             backColor=colors.HexColor("#fdf0f0"),
+                             borderColor=colors.HexColor("#d9534f"), borderWidth=1,
+                             borderPadding=6, spaceBefore=4, spaceAfter=8)
+        flow += [Paragraph(f"<b>{notice[0]}</b><br/>{notice[1]}", ban)]
     meta = (f"Location: <b>{sd.study.location}</b> | Directions: {sd.notes.get('incoming')} (in) / "
             f"{sd.notes.get('outgoing')} (out) | Speed limit: {sd.speed_limit:g} mph "
             f"({_SL_LABEL.get(sd.speed_limit_source, sd.speed_limit_source)})<br/>"
@@ -445,8 +605,8 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
         rows = [site_imgs[i:i + 2] for i in range(0, len(site_imgs), 2)]
         if len(rows[-1]) == 1:
             rows[-1].append("")
-        flow += [Paragraph("Installation Site", h2),
-                 Table(rows, colWidths=[avail_w / 2] * 2)]
+        flow += [KeepTogether([Paragraph("Installation Site", h2),
+                               Table(rows, colWidths=[avail_w / 2] * 2)])]
         gps = sd.study.loc_gps
         if gps:
             flow += [Paragraph(f'Photo GPS: {gps[0]:.5f}, {gps[1]:.5f} — '
@@ -458,17 +618,17 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
     diag = result.diagnostics
     risk = diag.risk if diag else "unknown"
     rc = _RISK_COLOR.get(risk, "#777")
-    flow += [Paragraph(f"Data Quality Diagnostics — "
-                       f"<font color='{rc}'><b>{risk.upper()} RISK</b></font>", h2)]
+    diag_head = Paragraph(f"Data Quality Diagnostics — "
+                          f"<font color='{rc}'><b>{quality_label(risk)}</b></font>", h2)
     if diag and diag.findings:
         rows = [["Severity", "Category", "Message"]]
         for f in diag.findings:
             rows.append([f.severity.upper(), f.category, Paragraph(f.message, small)])
         t = Table(rows, colWidths=[0.9 * inch, 1.6 * inch, avail_w - 2.5 * inch])
         t.setStyle(_grid([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef0fb"))]))
-        flow += [t]
+        flow += [KeepTogether([diag_head, t])]
     else:
-        flow += [Paragraph("No issues detected.", small)]
+        flow += [KeepTogether([diag_head, Paragraph("No issues detected.", small)])]
     flow += [Spacer(1, 10)]
 
     dmap = direction_display(sd.notes)
@@ -479,7 +639,9 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
                     _box_table(volume_rows, disp_dirs, avail_w / 2 - 4)]],
                   colWidths=[avail_w / 2, avail_w / 2])
     boxes.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
-    flow += [Paragraph("Summary Statistics", h2), boxes]
+    # Heading and boxes move as one, so "Summary Statistics" is never left stranded
+    # at the foot of a page with its tables overleaf.
+    flow += [KeepTogether([Paragraph("Summary Statistics", h2), boxes])]
 
     tmpdir = tempfile.mkdtemp(prefix="tdpdf_")
     try:
@@ -488,17 +650,27 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
         dfig = fig_dfactor(result.metrics, cfg, dnames)
         dpath = os.path.join(tmpdir, "dfactor.png")
         dimg = _pdf_figure(dfig, dpath, avail_w); plt.close(dfig)
-        flow += [Spacer(1, 8), Paragraph("Directional Split — D-Factor", h2), dimg]
+        flow += [Spacer(1, 8),
+                 KeepTogether([Paragraph("Directional Split — D-Factor", h2), dimg])]
         for label in directions:
             m = result.metrics[label]
             sub = direction_window(sd.window, label)
-            flow += [PageBreak(), Paragraph(f"{dmap.get(label, label)} Report", h2),
+            dname = dmap.get(label, label)
+            sec_head = Paragraph(f"{dname} Report", h2)
+            # Tag the heading so the running header can repeat it on the pages of
+            # figures that follow, which carry no heading of their own.
+            sec_head.td_section = f"{dname} Report"
+            flow += [PageBreak(), sec_head,
                      Paragraph(_recap(m), small), Spacer(1, 4)]
             flow += [_pct_class_combo(m, avail_w, h2, small, sd.speed_limit)]
             figs = build_figures(sub, m, cfg)
             # Resize-and-place each figure individually (not via save_figures) so
             # the PDF gets its own smaller canvas without affecting the HTML or
             # dashboard renders, which keep the full-size figures.
+            #
+            # No KeepTogether needed around these: an Image is not splittable, so
+            # reportlab already moves a chart that does not fit to the next page
+            # whole rather than slicing it.
             for name in _FIG_ORDER:
                 if name in figs:
                     fpath = os.path.join(tmpdir, f"{label}_{name}.png")
@@ -508,9 +680,17 @@ def write_pdf_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS,
             for title, mat, kind, grp in _hourly_specs(m):
                 if mat is None:
                     continue
-                flow += [PageBreak(), Paragraph(f"{dmap.get(label, label)} — {title}", h2),
+                mat_head = Paragraph(f"{dmap.get(label, label)} — {title}", h2)
+                mat_head.td_section = f"{dmap.get(label, label)} — {title}"
+                flow += [PageBreak(), mat_head,
                          _pdf_matrix(mat, kind, grp, sd.speed_limit, avail_w)]
-        doc.build(flow)
+        hdr_left = f"Speed & Volume Study — {sd.study.location}"
+        if notice:
+            hdr_left += f"  [{notice[0]}]"
+        # The front matter (diagnostics, summary, D-factor) runs before any
+        # direction heading, so it needs a name of its own for the header.
+        doc.build(flow, canvasmaker=_numbered_canvas(hdr_left, doc.section_by_page,
+                                                     "Study Overview"))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     return path
@@ -522,11 +702,19 @@ def _pdf_matrix(mat, kind, group_col, limit, avail_w):
     import math
 
     from reportlab.lib import colors
-    from reportlab.platypus import Table, TableStyle
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, Table, TableStyle
 
     cols = list(mat.columns)
     ncol = len(cols)
-    header = ["Hr"] + [str(c)[:9] for c in cols]
+    # Header cells are Paragraphs so a long name wraps onto a second line. They
+    # used to be plain strings clipped at 9 characters, which silently renamed the
+    # summary columns in every PDF: "Weekday Avg" printed as "Weekday A" and
+    # "Weekday Overall" as "Weekday O".
+    hdr_style = ParagraphStyle("mathdr", fontSize=5.5, leading=6.5, alignment=1,
+                               fontName="Helvetica-Bold")
+    header = [Paragraph("Hr", hdr_style)] + [Paragraph(display_name(c), hdr_style)
+                                             for c in cols]
     rows = [header]
 
     vmin = vmax = 0.0
@@ -723,8 +911,8 @@ def write_excel_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS
 
     wd = wb.add_worksheet("Diagnostics")
     wd.set_column(0, 0, 20); wd.set_column(1, 2, 60)
-    wd.write(0, 0, "Risk", h)
-    wd.write(0, 1, (result.diagnostics.risk if result.diagnostics else "?"), b)
+    wd.write(0, 0, "Data quality", h)
+    wd.write(0, 1, quality_label(result.diagnostics.risk) if result.diagnostics else "?", b)
     wd.write(2, 0, "Severity", h); wd.write(2, 1, "Category", h); wd.write(2, 2, "Message", h)
     for i, f in enumerate(result.diagnostics.findings if result.diagnostics else [], start=3):
         wd.write(i, 0, f.severity, b); wd.write(i, 1, f.category, b); wd.write(i, 2, f.message, b)

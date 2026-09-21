@@ -21,6 +21,24 @@ if TYPE_CHECKING:
 
 SEVERITY_ORDER = {"ok": 0, "info": 1, "warning": 2, "error": 3}
 
+# What the overall level is CALLED in reports and on the dashboard.
+#
+# The internal level stays "low"/"moderate"/"high" (it is keyed on all over the
+# place), but it is never shown that way. "LOW RISK" on a traffic study reads as a
+# statement about how dangerous the street is — which this is not, and which the
+# city should not appear to be publishing off the back of a data-quality check.
+# These findings only grade how far the COUNT can be trusted.
+QUALITY_LABEL = {
+    "low": "NO DATA ISSUES FOUND",
+    "moderate": "MINOR DATA ISSUES",
+    "high": "MAJOR DATA ISSUES",
+}
+
+
+def quality_label(risk: str) -> str:
+    """Display wording for an overall risk level (see ``QUALITY_LABEL``)."""
+    return QUALITY_LABEL.get(risk, "DATA QUALITY UNKNOWN")
+
 
 @dataclass
 class Finding:

@@ -22,12 +22,14 @@ from traffic_diag.catalog import (catalog_path, load_or_build_catalog,
                                   study_from_row)
 from traffic_diag.config import (DEFAULT_BASE, KENMORE_AMBER, KENMORE_NAVY,
                                  LOGO_PATH, LOGO_WHITE_PATH, NO_DATA_BASE_MSG)
+from traffic_diag.diagnostics import quality_label
 from traffic_diag.discovery import maps_url
 from traffic_diag.figures import build_figures, fig_dfactor
 from traffic_diag.metrics import HOUR_LABELS
 from traffic_diag.pipeline import process_study
 from traffic_diag.report import (build_html_report, direction_display, direction_window,
-                                  hourly_report_table, write_excel_report, write_pdf_report)
+                                  display_columns, hourly_report_table, status_notice,
+                                  write_excel_report, write_pdf_report)
 from traffic_diag.styling import (add_col_dividers, style_counts,
                                    style_hourly_table, style_speed)
 from traffic_diag.trends import over_time_table, fig_trend
@@ -210,8 +212,17 @@ with st.sidebar:
     years = sorted(int(y) for y in loc_rows["year"].dropna().unique())
 
     def _year_label(y):
+        """Year, marked ⚠ only when the year has NO usable study.
+
+        The mark used to fire when ANY study that year was compromised, which
+        flagged years that also held perfectly good counts — a location with three
+        deployments and one bad one looked entirely unusable. It now means what a
+        reader assumes it means: there is data for this year, but none of it is
+        sound. Individual bad deployments are still marked in the study picker
+        below, which is where that distinction actually matters.
+        """
         rr = loc_rows[loc_rows["year"] == y]
-        return f"{y}" + ("  ⚠" if (rr["status"] != "normal").any() else "")
+        return f"{y}" + ("  ⚠" if (rr["status"] != "normal").all() else "")
 
     year = st.selectbox("Year", years, index=len(years) - 1, format_func=_year_label)
     yr_rows = loc_rows[loc_rows["year"] == year].reset_index(drop=True)
@@ -254,7 +265,13 @@ diag = result.diagnostics
 # available, else the generic word). Merged stays "Merged".
 dmap = direction_display(sd.notes)
 
-st.subheader(sd.study.location)
+# The status comes from the folder the study is filed under, not from the
+# diagnostics below — a compromised study can still come back with no data issues,
+# so the banner is shown on its own terms and says where the label came from.
+_notice = status_notice(sd.study)
+st.subheader(sd.study.location + (f"  ⚠ [{_notice[0]}]" if _notice else ""))
+if _notice:
+    st.error(f"**⚠ {_notice[0]}** — {_notice[1]}")
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("AWDT", f"{m.avg_weekday_traffic:,.0f}"
           if m.avg_weekday_traffic == m.avg_weekday_traffic else "—")
@@ -295,7 +312,7 @@ if _loc_photos or _map_img:
 # Diagnostics
 color = _RISK_COLOR.get(diag.risk, "#777")
 st.markdown(f"### Diagnostics &nbsp; <span style='background:{color};color:#fff;"
-            f"padding:2px 10px;border-radius:10px'>{diag.risk.upper()} RISK</span>",
+            f"padding:2px 10px;border-radius:10px'>{quality_label(diag.risk)}</span>",
             unsafe_allow_html=True)
 if diag.findings:
     st.dataframe(diag.to_frame()[["severity", "category", "message"]],
@@ -380,15 +397,15 @@ with tab_tab:
     hrt = hourly_report_table(mv)
     if hrt is not None:
         st.markdown(f"**Hourly volume — {view_label}** (counts white→blue)")
-        hv = hrt.copy(); hv.index = [HOUR_LABELS[h] for h in hv.index]
+        hv = display_columns(hrt); hv.index = [HOUR_LABELS[h] for h in hv.index]
         _render_hourly(add_col_dividers(style_hourly_table(hv, sd.speed_limit), ["Average"]))
     if mv.hourly_p85 is not None:
         st.markdown(f"**Hourly 85th percentile speed — {view_label} (24h × day)**")
-        hp = mv.hourly_p85.copy(); hp.index = [HOUR_LABELS[h] for h in hp.index]
+        hp = display_columns(mv.hourly_p85); hp.index = [HOUR_LABELS[h] for h in hp.index]
         _render_hourly(add_col_dividers(style_speed(hp, sd.speed_limit).format(precision=2), ["Overall"]))
     if mv.hourly_speed is not None:
         st.markdown(f"**Hourly average speed — {view_label} (24h × day)**")
-        hs = mv.hourly_speed.copy(); hs.index = [HOUR_LABELS[h] for h in hs.index]
+        hs = display_columns(mv.hourly_speed); hs.index = [HOUR_LABELS[h] for h in hs.index]
         _render_hourly(add_col_dividers(style_speed(hs, sd.speed_limit).format(precision=2), ["Average"]))
     if mv.class_counts:
         st.markdown(f"**Vehicle classification — {view_label}**")
