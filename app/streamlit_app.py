@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import base64
 import os
+import subprocess
 import sys
 import tempfile
+import time
 
 import pandas as pd
 import streamlit as st
@@ -19,9 +21,10 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from traffic_diag.catalog import (catalog_path, load_or_build_catalog,
-                                  study_from_row)
+                                  resolve_study)
 from traffic_diag.config import (DEFAULT_BASE, KENMORE_AMBER, KENMORE_NAVY,
-                                 LOGO_PATH, LOGO_WHITE_PATH, NO_DATA_BASE_MSG)
+                                 LOGO_PATH, LOGO_WHITE_PATH, NO_DATA_BASE_MSG,
+                                 REPO_ROOT)
 from traffic_diag.diagnostics import quality_label
 from traffic_diag.discovery import maps_url
 from traffic_diag.figures import build_figures, fig_dfactor
@@ -145,6 +148,60 @@ def _catalog(base, stamp: float):
     return load_or_build_catalog(base, rebuild=False)
 
 
+# How old the catalog may get before the dashboard quietly rebuilds it, and how
+# long one rebuild is assumed to take (the lock keeps a second one from starting
+# while the first is still going).
+_CATALOG_MAX_AGE_S = 15 * 60
+_REFRESH_LOCK = os.path.join(REPO_ROOT, "reports", ".catalog_refresh.lock")
+
+
+def _refresh_running() -> bool:
+    """True if a refresh was started recently enough to still be going."""
+    try:
+        return (time.time() - os.path.getmtime(_REFRESH_LOCK)) < 10 * 60
+    except OSError:
+        return False
+
+
+def spawn_catalog_refresh(base, force: bool = False) -> bool:
+    """Rebuild the catalog in the background if it has gone stale. True if started.
+
+    The catalog records each study's path, so it goes wrong whenever someone adds
+    a study or reclassifies one by moving its folder. It was only ever rebuilt at
+    launch (run_dashboard.bat) or by the server's scheduled task, so a dashboard
+    left open all day kept serving whatever was true when it started.
+
+    Detached on purpose: the refresh walks the share and the page must not wait on
+    it. Nothing here reads the result — the new CSV changes the file's mtime, and
+    that mtime is the cache key above, so the next interaction picks it up by
+    itself.
+    """
+    if _refresh_running():
+        return False
+    if not force:
+        age = time.time() - _catalog_stamp(base) if _catalog_stamp(base) else 1e9
+        if age < _CATALOG_MAX_AGE_S:
+            return False
+    script = os.path.join(REPO_ROOT, "scripts", "build_catalog.py")
+    if not os.path.exists(script):
+        return False
+    try:
+        os.makedirs(os.path.dirname(_REFRESH_LOCK), exist_ok=True)
+        with open(_REFRESH_LOCK, "w") as fh:
+            fh.write(str(time.time()))
+        log = open(os.path.join(REPO_ROOT, "reports", "catalog_refresh.log"), "a")
+        # CREATE_NO_WINDOW keeps a console from flashing over the user's browser
+        # on Windows; the flag does not exist elsewhere, hence the getattr.
+        subprocess.Popen([sys.executable, script, "--base", base],
+                         stdout=log, stderr=log, cwd=REPO_ROOT,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return True
+    except Exception:
+        # A refresh that will not start must never take the dashboard down with
+        # it; the catalog on disk is still perfectly readable.
+        return False
+
+
 @st.cache_data(show_spinner=False)
 def _default_speed_limit(path, year):
     """Resolve the default speed limit for a study: Notes 'Limit:' -> Excel -> 25."""
@@ -199,6 +256,11 @@ with st.sidebar:
                  "Check that the server can see the share, then restart the app.")
         show_footer(); st.stop()
 
+    # Keep the list from going stale under a dashboard that stays open: if it is
+    # older than the threshold, a rebuild starts in the background and lands on a
+    # later rerun via the mtime cache key. Never blocks this render.
+    spawn_catalog_refresh(base)
+
     cat = _catalog(base, _catalog_stamp(base))
     if cat is None or cat.empty:
         st.error("No studies found in the study folder.")
@@ -238,8 +300,19 @@ with st.sidebar:
         si = 0
     row = yr_rows.iloc[si]
 
+    # Resolve against the disk before anything reads the study's files: a study
+    # reclassified since the last refresh has moved folder, and the row still
+    # records where it used to be. Doing this here rather than at Run time means
+    # the speed-limit default below reads the real _Notes.txt instead of missing
+    # it and quietly falling back to 25.
+    sel = moved_from = resolve_error = None
+    try:
+        sel, moved_from = resolve_study(base, row)
+    except LookupError as exc:
+        resolve_error = str(exc)
+
     # Default speed limit resolved per study: Notes 'Limit:' -> existing Excel -> 25.
-    default_sl, sl_src = _default_speed_limit(row["path"], int(year))
+    default_sl, sl_src = _default_speed_limit(sel.path if sel else row["path"], int(year))
     speed_limit = st.number_input("Speed limit (mph)", 5, 70, int(default_sl), 1)
     st.caption(f"Default {default_sl:g} mph from **{_SL_SRC_LABEL.get(sl_src, sl_src)}** — "
                f"override above if needed.")
@@ -251,7 +324,16 @@ if not run and "result" not in st.session_state:
     st.stop()
 
 if run:
-    sel = study_from_row(row)
+    if resolve_error:
+        st.error(resolve_error)
+        if spawn_catalog_refresh(base, force=True):
+            st.info("Rebuilding the study list now — reload in a minute.")
+        show_footer(); st.stop()
+    if moved_from:
+        st.warning(f"**{row['study_id']}** has been moved since the study list was "
+                   f"last built — it is now filed as **{sel.status}**. Using its "
+                   f"current location; the list is being rebuilt in the background.")
+        spawn_catalog_refresh(base, force=True)
     # Only override if the user changed the value; otherwise auto-resolve (keeps the
     # source label as Excel / Notes / default).
     explicit = None if abs(float(speed_limit) - default_sl) < 1e-9 else float(speed_limit)

@@ -27,7 +27,7 @@ from typing import Optional
 
 import pandas as pd
 
-from .discovery import Study, find_studies
+from .discovery import Study, find_studies, relocate_study
 from .pipeline import process_study
 
 CATALOG_NAME = "study_catalog.csv"
@@ -264,3 +264,33 @@ def study_from_row(row) -> Study:
         source_name=str(row.get("source_name") or "radar"),
         status=str(row.get("status") or "normal"),
     )
+
+
+def resolve_study(base: str, row) -> tuple:
+    """``(study, moved_from)`` for a catalog row, following the folder if it moved.
+
+    The catalog stores each study's path, so a row goes wrong the moment someone
+    reclassifies a study by dragging its folder between ``_Incomplete``,
+    ``_Compromised Studies`` and the year folder. Until the next refresh the row
+    points at a path that no longer exists, and the only symptom was a
+    ``RawLoadError`` naming a glob — no hint that the study had simply moved.
+
+    So the path is checked before use. If it is gone the folder is looked up by
+    name (a few stat calls, not a tree walk) and the caller gets the study at its
+    real location plus the stale path in ``moved_from``, which is its cue to
+    mention the move and get the catalog rebuilt. ``moved_from`` is None in the
+    normal case. A study that cannot be found anywhere raises ``LookupError``,
+    since there is nothing sensible to process.
+    """
+    study = study_from_row(row)
+    if os.path.isdir(study.path):
+        return study, None
+
+    found = relocate_study(base, study.folder_name, year=study.year,
+                           source_name=study.source_name)
+    if found is None:
+        raise LookupError(
+            f"Study folder '{study.folder_name}' is not at its recorded location "
+            f"({study.path}) and was not found anywhere under {base}. It may have "
+            f"been renamed or removed; refresh the study list.")
+    return found, study.path

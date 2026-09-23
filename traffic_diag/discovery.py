@@ -241,6 +241,52 @@ def _make_study(path: str, year: int, status: str, source_name: str) -> Study:
                  source_name=source_name, status=status)
 
 
+def _year_candidates(base: str, year: int, folder: str) -> list:
+    """The places a study folder called ``folder`` could sit inside ``<base>/<year>``.
+
+    Exactly three, because a study is either loose in the year folder or inside one
+    of the recognized special subdirs. The subdirs are matched off a scan of the
+    year folder rather than hard-coded, so the real spelling and casing on disk is
+    what gets used.
+    """
+    ydir = os.path.join(base, str(year))
+    if not os.path.isdir(ydir):
+        return []
+    out = [(os.path.join(ydir, folder), "normal")]
+    try:
+        for entry in os.scandir(ydir):
+            special = SPECIAL_SUBDIRS.get(entry.name.lower())
+            if special and entry.is_dir():
+                out.append((os.path.join(entry.path, folder), special))
+    except OSError:
+        pass
+    return out
+
+
+def relocate_study(base: str, folder: str, year: Optional[int] = None,
+                   source_name: str = "radar") -> Optional[Study]:
+    """Find the study folder named ``folder``, wherever it now sits.
+
+    Studies get reclassified by moving the folder — out of ``_Incomplete`` once a
+    count finishes, into ``_Compromised Studies`` when it turns out to be no good.
+    The move changes the path but not the folder name, so anything holding the old
+    path (the catalog, and therefore the dashboard) breaks until the next rescan.
+
+    This is the cheap repair: a handful of ``isdir`` checks against the three
+    places the folder could be, rather than the ~5s walk of the whole tree that a
+    catalog refresh costs. ``year`` is tried first and is almost always right,
+    since the folder name carries the install date; the remaining years are only
+    searched if it is not there.
+    """
+    years = ([year] if year is not None else []) + [
+        y for y in find_years(base) if y != year]
+    for yr in years:
+        for path, status in _year_candidates(base, yr, folder):
+            if os.path.isdir(path) and _is_study_dir(path):
+                return _make_study(path, yr, status, source_name)
+    return None
+
+
 def find_locations(base: str, year: int, **kwargs) -> list[Study]:
     """Studies for one year (dashboard populates its location dropdown from this)."""
     return find_studies(base, year=year, **kwargs)

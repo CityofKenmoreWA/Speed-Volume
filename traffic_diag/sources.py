@@ -30,6 +30,14 @@ def find_raw_file(study_dir: str, spec: SourceSpec) -> str:
       2. a file whose name starts with the folder's location token;
       3. any file with 'raw' in its name; else the first match.
     """
+    # A missing folder and a folder with no raw file both make glob return [], so
+    # they have to be told apart here or the error blames the wrong thing: the
+    # usual cause of a vanished folder is a study reclassified by moving it
+    # between the year folder, _Incomplete and _Compromised Studies.
+    if not os.path.isdir(study_dir):
+        raise RawLoadError(
+            f"Study folder does not exist: {study_dir} — it was probably moved or "
+            f"renamed. Refresh the study list so its new location is picked up.")
     matches = sorted(glob.glob(os.path.join(study_dir, spec.raw_glob)))
     if not matches:
         raise RawLoadError(f"No file matching {spec.raw_glob!r} in {study_dir}")
