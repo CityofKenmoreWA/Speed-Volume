@@ -97,6 +97,36 @@ def status_notice(study):
     return _STATUS_NOTICE.get(getattr(study, "status", "normal"))
 
 
+# Excel forbids these in a sheet name, caps it at 31 characters, and compares
+# names case-insensitively. Breaking any of those raises at add_worksheet time and
+# loses the whole workbook, so names are put through _sheet_namer rather than
+# assembled by hand.
+_SHEET_BAD = {ord(c): "-" for c in "[]:*?/\\"}
+
+
+def _sheet_namer(used=None):
+    """Return a function turning a wanted title into a legal, unique sheet name.
+
+    Direction labels are already de-duplicated by ``direction_display``, but they
+    can still collide here after being truncated to Excel's 31 characters, so
+    uniqueness is enforced on the final name.
+    """
+    taken = {str(u).lower() for u in (used or [])}
+
+    def name(title: str) -> str:
+        base = str(title).translate(_SHEET_BAD).strip().strip("'") or "Sheet"
+        base = base[:31]
+        candidate, n = base, 2
+        while candidate.lower() in taken:
+            tail = f" ({n})"
+            candidate = base[:31 - len(tail)].rstrip() + tail
+            n += 1
+        taken.add(candidate.lower())
+        return candidate
+
+    return name
+
+
 # Column names as they should READ in a rendered table. The DataFrame keeps the
 # short forms — validate.py matches Excel headers against those exact names — so
 # only the printed header is spelled out. This makes the volume tables agree with
@@ -136,13 +166,28 @@ def direction_display(notes) -> dict:
 
     Incoming/Outgoing become the compass heading recorded in ``_Notes.txt``; when the
     notes don't specify one, the generic word is kept. Merged stays "Merged".
+
+    Labels are forced to be distinct. A ``_Notes.txt`` can name both travel
+    directions the same — usually a copy-paste slip, e.g. both recorded as
+    "SB Simonds Rd" — and the report then has two sections with one name and the
+    workbook cannot be written at all, because two sheets would share a name.
+    A repeated label keeps its canonical direction alongside it so the two stay
+    tellable apart instead of one silently standing for both.
     """
     notes = notes or {}
-    return {
+    raw = {
         "Merged": "Merged",
         "Incoming": notes.get("incoming") or "Incoming",
         "Outgoing": notes.get("outgoing") or "Outgoing",
     }
+    by_label: dict = {}
+    for key, label in raw.items():
+        by_label.setdefault(str(label).strip(), []).append(key)
+    out = {}
+    for label, keys in by_label.items():
+        for key in keys:
+            out[key] = label if len(keys) == 1 else f"{label} ({key})"
+    return out
 
 
 def _fig_to_b64(fig) -> str:
@@ -899,14 +944,15 @@ def write_excel_report(result, path: str, cfg: AnalysisConfig = DEFAULT_ANALYSIS
 
     # Per-direction hourly matrices: Volume (counts), 85th %ile speed, Mean speed.
     # A thick rule separates the per-day columns from the summary columns.
+    sheet = _sheet_namer(used=["Summary"])
     for label in dirs:
         m = result.metrics[label]
         dlabel = dmap.get(label, label)
-        _write_matrix(wb.add_worksheet(f"{dlabel} Volume"[:31]), hourly_report_table(m), h, fmt,
+        _write_matrix(wb.add_worksheet(sheet(f"{dlabel} Volume")), hourly_report_table(m), h, fmt,
                       limit, group_starts=("Average",), hL=hL)
-        _write_matrix(wb.add_worksheet(f"{dlabel} 85th"[:31]), m.hourly_p85, h, fmt,
+        _write_matrix(wb.add_worksheet(sheet(f"{dlabel} 85th")), m.hourly_p85, h, fmt,
                       limit, all_speed=True, group_starts=("Overall",), hL=hL)
-        _write_matrix(wb.add_worksheet(f"{dlabel} Speed"[:31]), m.hourly_speed, h, fmt,
+        _write_matrix(wb.add_worksheet(sheet(f"{dlabel} Speed")), m.hourly_speed, h, fmt,
                       limit, all_speed=True, group_starts=("Average",), hL=hL)
 
     wd = wb.add_worksheet("Diagnostics")

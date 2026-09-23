@@ -12,8 +12,22 @@ Examples
   # every study for a year
   python scripts/generate_report.py --year 2025 --all
 
+  # EVERY study, all years, all three formats, into one output folder
+  python scripts/generate_report.py --all --format all --out reports/all
+
+  # ... or into each study's own folder, resuming where a previous run stopped
+  python scripts/generate_report.py --all --format all --in-place
+
   # validate Python output against the legacy Excel reports
   python scripts/generate_report.py --year 2025 --validate
+
+Output is always <study>_<suffix>.<ext> (suffix defaults to "Analysis"), in
+<out>/<study_id>/ or in the study's own folder with --in-place. The suffix must
+not end in "Report" or it would overwrite the agency's own <study>_Report files
+on a case-insensitive filesystem.
+
+Exit codes: 0 all good · 1 bad arguments / nothing matched · 2 finished, but one
+or more studies failed (each is printed as [ERR]).
 """
 from __future__ import annotations
 
@@ -79,15 +93,23 @@ def _emit(result, outdir, formats, in_place=False,
           suffix=DEFAULT_IN_PLACE_SUFFIX, overwrite=False):
     """Write the requested formats; return (written, skipped).
 
-    Default: <outdir>/<study_id>/<study_id>_report.<ext>.
+    Default: <outdir>/<study_id>/<study_id>_<suffix>.<ext>.
     --in-place: into the study's own folder as <study_id>_<suffix>.<ext>, and
     never over an existing file unless ``overwrite``.
+
+    Both modes use the same stem. They used to differ — ``--out`` wrote
+    ``<study>_report.<ext>`` — which quietly set a trap for exactly the bulk run
+    this script exists for: Windows filenames are case-insensitive, so copying a
+    generated ``<study>_report.xlsx`` into a study folder does not land beside the
+    agency's ``<study>_Report.xlsx``, it overwrites it. Same stem everywhere means
+    output that can be moved onto the share without destroying anything.
     """
     sid = result.study.study_id
+    stem = f"{sid}_{suffix}"
     if in_place:
-        target, stem = result.study.path, f"{sid}_{suffix}"
+        target = result.study.path
     else:
-        target, stem = os.path.join(outdir, sid), f"{sid}_report"
+        target = os.path.join(outdir, sid)
         os.makedirs(target, exist_ok=True)
 
     written, skipped = [], []
@@ -188,12 +210,14 @@ def main(argv=None):
 
     formats = FORMATS[args.format]
 
+    # Applies to both modes now that they share a stem: --out output is routinely
+    # copied onto the share, where a '<study>_Report.<ext>' name would land on top
+    # of the agency's own file rather than beside it.
+    if _collides_with_legacy(f"x_{args.suffix}"):
+        p.error(f"--suffix {args.suffix!r} would produce '<study>_{args.suffix}.xlsx', "
+                f"which Windows treats as the existing '<study>_Report.xlsx' and would "
+                f"destroy it. Choose a suffix that does not end in 'Report'.")
     if args.in_place:
-        stem_probe = f"x_{args.suffix}"
-        if _collides_with_legacy(stem_probe):
-            p.error(f"--suffix {args.suffix!r} would produce '<study>_{args.suffix}.xlsx', "
-                    f"which Windows treats as the existing '<study>_Report.xlsx' and would "
-                    f"destroy it. Choose a suffix that does not end in 'Report'.")
         print(f"Writing into each study's own folder as <study>_{args.suffix}.<ext>; "
               f"existing files are {'REPLACED' if args.overwrite else 'skipped'}.")
 
@@ -218,7 +242,10 @@ def main(argv=None):
     if len(studies) > 1:
         print(f"\n{len(studies)} studies: {n_written} file(s) written, "
               f"{n_skipped} skipped, {n_err} error(s).")
-    return 0
+    # Non-zero when studies failed. A run over the whole share prints hundreds of
+    # lines, and the failures scroll past; the exit code is what lets a scheduled
+    # run, or anyone who redirected the output to a log, notice them at all.
+    return 2 if n_err else 0
 
 
 if __name__ == "__main__":
