@@ -330,9 +330,10 @@ if run:
             st.info("Rebuilding the study list now — reload in a minute.")
         show_footer(); st.stop()
     if moved_from:
-        st.warning(f"**{row['study_id']}** has been moved since the study list was "
-                   f"last built — it is now filed as **{sel.status}**. Using its "
-                   f"current location; the list is being rebuilt in the background.")
+        # Recover quietly. A study that was reclassified is housekeeping, not
+        # something the reader of the report needs told: it opens from its real
+        # location either way, and the rebuild started here corrects the entry
+        # within the minute.
         spawn_catalog_refresh(base, force=True)
     # Only override if the user changed the value; otherwise auto-resolve (keeps the
     # source label as Excel / Notes / default).
