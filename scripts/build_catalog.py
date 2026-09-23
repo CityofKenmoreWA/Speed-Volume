@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -69,13 +70,19 @@ def main() -> int:
     # Refresh incrementally: reuse metrics for studies already in the CSV, compute
     # only new ones.
     stats: dict = {}
+    t0 = time.perf_counter()
     df, wrote = refresh_catalog(args.base, compute=not args.no_metrics, stats=stats)
+    elapsed = time.perf_counter() - t0
     out = catalog_path(args.base)
     n_locs = df["location"].nunique() if len(df) else 0
     n_years = df["year"].nunique() if len(df) else 0
+    # Every line used to carry the timestamp taken at startup, so the log could
+    # never show how long a refresh took — the one thing you want from it when a
+    # refresh feels slow. Report the real elapsed time, and what it went on:
+    # recomputing a study's metrics costs ~0.3s, scanning them all costs ~2s.
     print(f"[{stamp}] {stats.get('total', len(df))} studies | {n_locs} locations | "
           f"{n_years} years  (metrics: {stats.get('computed', 0)} new/changed, "
-          f"{stats.get('reused', 0)} unchanged)")
+          f"{stats.get('reused', 0)} unchanged) in {elapsed:.1f}s")
     if wrote:
         print(f"[{stamp}] wrote {out}")
         return 0

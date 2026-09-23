@@ -10,6 +10,7 @@ Layout::
 """
 from __future__ import annotations
 
+import fnmatch
 import glob
 import os
 import re
@@ -195,12 +196,25 @@ def find_years(base: str) -> list[int]:
     return sorted(years)
 
 
+# What marks a directory as a study rather than some other folder in a year.
+_STUDY_MARKERS = ("*_Raw.csv", "*_Report.xlsx")
+
+
 def _is_study_dir(path: str) -> bool:
-    """A study folder contains a raw CSV or a report workbook."""
-    return bool(
-        glob.glob(os.path.join(path, "*_Raw.csv"))
-        or glob.glob(os.path.join(path, "*_Report.xlsx"))
-    )
+    """A study folder contains a raw CSV or a report workbook.
+
+    One listing, stopping at the first marker, rather than a glob per pattern —
+    this runs on every candidate folder in the tree, so over a share the round
+    trips are the cost.
+    """
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                if any(fnmatch.fnmatch(entry.name, p) for p in _STUDY_MARKERS):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def find_studies(

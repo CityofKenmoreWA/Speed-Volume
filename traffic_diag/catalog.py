@@ -20,8 +20,10 @@ to tell "already computed" from "computed from older data".
 """
 from __future__ import annotations
 
+import fnmatch
 import glob
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Optional
 
@@ -44,17 +46,28 @@ def study_fingerprint(path: str) -> str:
     """A cheap change token for one study folder: newest mtime + total size of its
     data files, as "<mtime>:<bytes>:<count>".
 
-    Metadata only — no file contents are read, so a full pass over ~770 studies
-    costs about five seconds over the share. Returns "" if the folder cannot be
+    Metadata only — no file contents are read. Returns "" if the folder cannot be
     read, which is treated as "changed" and simply recomputes.
+
+    One ``scandir`` rather than a glob per pattern. Every refresh fingerprints
+    every study, so this runs ~770 times over a network share and the cost is
+    round trips, not work: three globs plus a ``stat`` per hit was about seven
+    round trips per folder where one listing will do. Windows returns size and
+    mtime as part of the listing itself, so ``DirEntry.stat()`` here is free.
+    Matching then happens in memory. Measured on the share: 5.8s -> 1.7s, with
+    byte-identical fingerprints for all 776 studies.
     """
     newest = 0.0
     total = 0
     count = 0
     try:
-        for pattern in FINGERPRINT_GLOBS:
-            for f in glob.glob(os.path.join(path, pattern)):
-                st = os.stat(f)
+        with os.scandir(path) as it:
+            for entry in it:
+                if not any(fnmatch.fnmatch(entry.name, p) for p in FINGERPRINT_GLOBS):
+                    continue
+                if not entry.is_file():
+                    continue
+                st = entry.stat()
                 newest = max(newest, st.st_mtime)
                 total += st.st_size
                 count += 1
@@ -63,7 +76,65 @@ def study_fingerprint(path: str) -> str:
     return f"{newest:.0f}:{total}:{count}" if count else ""
 
 
-def _struct_row(s: Study) -> dict:
+# Fingerprinting is latency-bound on a network share, so the listings are issued
+# concurrently. Eight keeps the share busy without flooding it: measured 1.7s
+# serial -> 0.24s, and going to sixteen only buys another 0.08s.
+_FINGERPRINT_WORKERS = 8
+
+
+def fingerprint_all(paths) -> dict:
+    """``{path: fingerprint}`` for many studies at once, in parallel."""
+    paths = list(paths)
+    if not paths:
+        return {}
+    with ThreadPoolExecutor(max_workers=_FINGERPRINT_WORKERS) as pool:
+        return dict(zip(paths, pool.map(study_fingerprint, paths)))
+
+
+def study_types_for(studies) -> dict:
+    """``{path: study_type}``, reading the notes files concurrently.
+
+    ``Study.study_type`` parses ``_Notes.txt``, so asking for it one study at a
+    time means one file read per study over the share. Only the studies whose
+    notes actually changed reach this — the rest keep the value already stored in
+    the catalog — but a first build has to read all of them.
+    """
+    studies = list(studies)
+    if not studies:
+        return {}
+
+    def _one(s):
+        try:
+            return s.study_type
+        except Exception:
+            return ""
+
+    with ThreadPoolExecutor(max_workers=_FINGERPRINT_WORKERS) as pool:
+        return dict(zip((s.path for s in studies), pool.map(_one, studies)))
+
+
+def _cached_study_type(cached: Optional[dict]) -> Optional[str]:
+    """The stored study_type, or None if the row has none to reuse.
+
+    An empty string is a real value here (plenty of studies classify as nothing in
+    particular), so only a genuinely absent or NaN cell counts as "not stored".
+    """
+    if not cached or "study_type" not in cached:
+        return None
+    v = cached.get("study_type")
+    if v is None or (isinstance(v, float) and v != v):
+        return ""
+    return str(v)
+
+
+def _struct_row(s: Study, fingerprint: Optional[str] = None,
+                study_type: Optional[str] = None) -> dict:
+    """One catalog row's structural fields.
+
+    ``fingerprint`` and ``study_type`` are passed in when the caller already has
+    them — both cost a trip to the share per study, and a bulk refresh resolves
+    them for the whole tree at once rather than one at a time in a loop.
+    """
     return {
         "location": s.location,
         "year": s.year,
@@ -71,9 +142,9 @@ def _struct_row(s: Study) -> dict:
         "study_id": s.study_id,
         "status": s.status,
         "source_name": s.source_name,
-        "study_type": s.study_type,
+        "study_type": s.study_type if study_type is None else study_type,
         "path": s.path,
-        "fingerprint": study_fingerprint(s.path),
+        "fingerprint": study_fingerprint(s.path) if fingerprint is None else fingerprint,
     }
 
 
@@ -148,8 +219,34 @@ def build_catalog(base: str, source_name: str = "radar",
 
     n_reused = n_computed = 0
     rows = []
-    for s in find_studies(base, source_name=source_name):
-        row = _struct_row(s)
+    found = find_studies(base, source_name=source_name)
+
+    # Fingerprint every study up front and in parallel. One at a time inside the
+    # loop this was one of the two dominant costs of a refresh, and it is paid on
+    # every run whether or not anything changed.
+    prints = fingerprint_all(s.path for s in found)
+
+    # study_type parses the study's _Notes.txt, and that file is part of the
+    # fingerprint — so a study whose fingerprint still matches cannot have a
+    # different study_type, and the stored value stands. Only the studies that
+    # really changed are read, and those are read concurrently. Reading all of
+    # them every refresh was the other dominant cost.
+    reusable_type = {}
+    needs_type = []
+    for s in found:
+        cached = prev.get(_cache_key(s.path))
+        fp = prints.get(s.path, "")
+        fp_match = (cached is not None and fp != ""
+                    and str(cached.get("fingerprint") or "") == fp)
+        stored = _cached_study_type(cached) if fp_match else None
+        if stored is None:
+            needs_type.append(s)
+        else:
+            reusable_type[s.path] = stored
+    reusable_type.update(study_types_for(needs_type))
+
+    for s in found:
+        row = _struct_row(s, prints.get(s.path), reusable_type.get(s.path))
         cached = prev.get(_cache_key(s.path))
         fresh = (cached is not None
                  and _has_metrics(cached)
