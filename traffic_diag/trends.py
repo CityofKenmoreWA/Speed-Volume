@@ -11,7 +11,6 @@ from datetime import date
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -103,28 +102,45 @@ def fig_trend(table: pd.DataFrame, location: str, direction: str | None = None):
     df = table.copy()
     df = df[df["Date"] != ""]
     x = pd.to_datetime(df["Date"], errors="coerce")
-    xnum = mdates.date2num(x)
+    df = df[x.notna()]
+    x = x[x.notna()].sort_values()
+    df = df.loc[x.index]
     adt = pd.to_numeric(df["ADT"], errors="coerce").to_numpy()
     awdt = pd.to_numeric(df["AWDT"], errors="coerce").to_numpy()
     p85 = pd.to_numeric(df["85th Speed"], errors="coerce").to_numpy()
     mean = pd.to_numeric(df["Mean Speed"], errors="coerce").to_numpy()
 
-    # Bar-group width from the tightest spacing between studies so grouped columns
-    # don't overlap when two studies fall close together.
-    if len(xnum) >= 2:
-        gaps = np.diff(np.sort(xnum)); gaps = gaps[gaps > 0]
-        span = float(gaps.min()) if gaps.size else 180.0
-    else:
-        span = 180.0
-    bw = min(span * 0.8, 220.0) / 2   # width of each of the two bars, in days
+    # One evenly-spaced slot per study, rather than placing each study at its true
+    # date on a time axis.
+    #
+    # Studies are not spread evenly: a location will have two counts a week apart
+    # inside a history spanning years. On a real time axis the bar width has to be
+    # small enough that the closest pair does not overlap, which then applies to
+    # every bar on the chart — at 80thAv_no_186thSt a 7-day gap across a 1530-day
+    # span left each bar 0.18% of the axis wide, a hairline you could not read a
+    # value off. 26 of the 172 multi-study locations have a gap under a month, so
+    # no single width fixes it: whatever is wide enough to read overlaps the close
+    # pair, and whatever avoids the overlap is invisible.
+    #
+    # Equal slots sidestep the trade-off entirely. The dates are still shown, as
+    # the axis labels, so nothing is lost except the horizontal distortion — and
+    # with at most nine studies at any location they all stay legible.
+    pos = np.arange(len(df), dtype=float)
+    bw = 0.38                        # each bar; the pair spans 0.76 of a slot
 
     fig, (axv, axs) = plt.subplots(2, 1, figsize=(8, 6.2), sharex=True)
 
     # Top panel: volume as grouped columns.
-    axv.bar(xnum - bw / 2, adt, width=bw, color="#4f81bd", label="ADT")
-    axv.bar(xnum + bw / 2, awdt, width=bw, color="#2ca25f", label="AWDT")
-    axv.set_ylabel("Volume (veh/day)"); axv.set_ylim(bottom=0)
-    axv.legend(fontsize=8, loc="best", ncol=2); axv.grid(True, axis="y", alpha=0.3)
+    axv.bar(pos - bw / 2, adt, width=bw, color="#4f81bd", label="ADT")
+    axv.bar(pos + bw / 2, awdt, width=bw, color="#2ca25f", label="AWDT")
+    axv.set_ylabel("Volume (veh/day)")
+    # Headroom above the tallest column so the legend has somewhere to sit. With
+    # only two or three studies the columns are wide enough to fill the panel, and
+    # "best" placement then put the legend on top of one of them.
+    vmax = np.nanmax(np.concatenate([adt, awdt])) if len(pos) else 0.0
+    axv.set_ylim(0, vmax * 1.18 if np.isfinite(vmax) and vmax > 0 else 1)
+    axv.legend(fontsize=8, loc="upper right", ncol=2, framealpha=0.92)
+    axv.grid(True, axis="y", alpha=0.3)
     title = f"{location} — metrics over time"
     if direction and direction != "Merged":
         title += f" ({direction})"
@@ -132,25 +148,22 @@ def fig_trend(table: pd.DataFrame, location: str, direction: str | None = None):
 
     # Bottom panel: speed as lines with markers. Headroom of +5 mph above the
     # highest speed point so the top line isn't pinned to the frame.
-    axs.plot(xnum, p85, "-o", color="#e08214", label="85th %ile speed")
-    axs.plot(xnum, mean, "-^", color="#d9534f", label="Mean speed")
-    both = np.concatenate([p85, mean]) if len(xnum) else np.array([np.nan])
+    axs.plot(pos, p85, "-o", color="#e08214", label="85th %ile speed")
+    axs.plot(pos, mean, "-^", color="#d9534f", label="Mean speed")
+    both = np.concatenate([p85, mean]) if len(pos) else np.array([np.nan])
     smax = np.nanmax(both) if np.isfinite(both).any() else 0.0
     axs.set_ylabel("Speed (mph)"); axs.set_ylim(0, smax + 5 if smax > 0 else 5)
     axs.set_xlabel("Study date")
     axs.legend(fontsize=8, loc="best", ncol=2); axs.grid(True, alpha=0.3)
 
-    # One tick per year for multi-year histories; but when the studies span < ~2
-    # years, year boundaries are too sparse (a single study pair can leave just one
-    # tick between the bars), so label each study's own date instead.
-    axs.xaxis_date()
-    span_days = float(xnum.max() - xnum.min()) if len(xnum) else 0.0
-    if len(xnum) >= 2 and span_days >= 730:
-        axs.xaxis.set_major_locator(mdates.YearLocator())
-        axs.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
-    else:
-        axs.set_xticks(sorted(xnum))
-        axs.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    # Each slot labelled with its own study date. The full date, not just the
+    # month: two counts at one location can fall in the same month, and "Oct 2021"
+    # twice over would look like a mistake.
+    labels = [d.strftime("%Y-%m-%d") for d in x]
+    axs.set_xticks(pos)
+    axs.set_xticklabels(labels)
+    if len(pos):
+        axs.set_xlim(-0.6, len(pos) - 0.4)
     # Show x-tick labels on BOTH panels (sharex hides them on the top axis by
     # default, and fig.autofmt_xdate() would too — so rotate manually per axis).
     for a in (axv, axs):
@@ -158,5 +171,6 @@ def fig_trend(table: pd.DataFrame, location: str, direction: str | None = None):
         for lbl in a.get_xticklabels():
             lbl.set_rotation(30)
             lbl.set_horizontalalignment("right")
+            lbl.set_fontsize(8)
     fig.tight_layout()
     return fig
