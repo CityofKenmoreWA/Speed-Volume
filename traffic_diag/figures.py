@@ -10,7 +10,7 @@ definitions in the ``* Report`` sheets); only the weekday-85th chart type deviat
                                                (drawn as a line, not the workbook's bars).
   * "Time Distribution"                        bar: average hourly volume (Σ/days).
   * "Daily Distribution"                       bar: daily totals Day1..Day7 (weekday labels).
-  * "Speed Distribution"                       bar: all-window counts in 5-mph bins [lo,hi).
+  * "Speed Distribution"                       bar: all-window counts in 1-mph bins [lo,hi).
 
 Bar charts carry value labels above the bars, matching the report.
 """
@@ -22,7 +22,7 @@ import matplotlib
 matplotlib.use("Agg")  # safe for servers / Streamlit / batch
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.ticker import FuncFormatter, MaxNLocator
+from matplotlib.ticker import FuncFormatter, MaxNLocator, MultipleLocator
 
 from .config import FIGURE_DPI, SPEED, TS, AnalysisConfig, DEFAULT_ANALYSIS
 from .metrics import (DirectionMetrics, DOW_NAMES, HOUR_LABELS,
@@ -275,21 +275,32 @@ def fig_daily_distribution(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
 
 
 def fig_speed_distribution(window, m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
-    """All-window vehicle counts in 5-mph bins [lo, hi), 0..100."""
+    """All-window vehicle counts in 1-mph bins [lo, hi), 0..100."""
     fig, ax = plt.subplots(figsize=(9, 4))
-    edges = np.arange(0, cfg.max_speed_bin + 5, 5)   # 0,5,...,100
+    edges = np.arange(0, cfg.max_speed_bin + 1, 1)   # 0,1,...,100
     sp = window[SPEED].dropna().to_numpy()
     counts, _ = np.histogram(sp, bins=edges)
-    labels = [f"{int(edges[i])}-{int(edges[i+1])}" for i in range(len(edges) - 1)]
-    bars = ax.bar(range(len(counts)), counts, color=_BAR)
-    _bar_labels(ax, bars, "%.0f")
-    # Red vertical line at the posted speed limit. Bar i spans speeds [5i, 5i+5); the
-    # limit value maps to x = limit/5 - 0.5 (a bin boundary sits at the bar's left edge).
+    # Bars sit on a real speed axis, each spanning its own [lo, lo+1). A hundred bars
+    # leave no room for a count over each one or a range label under each one, so the
+    # axis is ticked every 5 mph and the counts are read off the y-axis instead.
+    ax.bar(edges[:-1], counts, width=1.0, align="edge", color=_BAR,
+           edgecolor="white", linewidth=0.3)
+    # Red vertical line at the posted speed limit, now directly at its speed value.
     if m.speed_limit:
-        ax.axvline(m.speed_limit / 5.0 - 0.5, color="red", lw=1.6,
+        ax.axvline(m.speed_limit, color="red", lw=1.6,
                    label=f"Speed limit = {m.speed_limit:g}")
         ax.legend(loc="upper right", **_LEGEND_KW)
-    ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, rotation=90, fontsize=6)
+    # Show the span that holds vehicles (and the limit line), not the empty 0..100.
+    seen = np.nonzero(counts)[0]
+    lo = int(seen[0]) if seen.size else 0
+    hi = int(seen[-1]) + 1 if seen.size else cfg.max_speed_bin
+    if m.speed_limit:
+        lo, hi = min(lo, int(m.speed_limit)), max(hi, int(m.speed_limit) + 1)
+    lo, hi = max(0, (lo // 5) * 5 - 5), min(cfg.max_speed_bin, -(-hi // 5) * 5 + 5)
+    ax.set_xlim(lo, hi)
+    ax.xaxis.set_major_locator(MultipleLocator(5))
+    ax.xaxis.set_minor_locator(MultipleLocator(1))
+    ax.tick_params(axis="x", labelsize=8)
     ax.set_ylabel("Vehicle Counts"); ax.set_xlabel("Speed (mph)")
     # This chart set no y-range at all, so the tallest bar reached the top of the
     # axes and its count label was clipped off the figure.
