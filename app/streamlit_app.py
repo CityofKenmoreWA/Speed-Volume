@@ -118,9 +118,10 @@ def show_footer():
     st.markdown(
         """
         <div style='text-align: center; color: gray; font-size: 0.9em;'>
-            Developed by Mohammad Mehdi Oshanreh <a href='https://oshanreh.com' target='_blank' style='text-decoration: none;'>oshanreh.com</a>
+            Made with ❤️ for the City of Kenmore by Mohammad Mehdi Oshanreh
+            · <a href='https://oshanreh.com' target='_blank' style='text-decoration: none;'>oshanreh.com</a>
         </div>
-        """, 
+        """,
         unsafe_allow_html=True
     )
 

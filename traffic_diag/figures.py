@@ -253,24 +253,33 @@ def fig_time_distribution(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
 
 
 def fig_daily_distribution(m: DirectionMetrics, cfg=DEFAULT_ANALYSIS):
-    fig, ax = plt.subplots(figsize=(8, 4))
+    # constrained_layout for the same reason as fig_weekday_p85: the legend lives
+    # outside the axes, and only a layout re-solved at every draw keeps its strip
+    # reserved when the PDF re-renders the figure smaller.
+    fig, ax = plt.subplots(figsize=(8, 4), layout="constrained")
     seq = m.daily_sequence or [(d, m.daily_totals.get(d, 0)) for d in DOW_NAMES if d in m.daily_totals]
     labels = [d for d, _ in seq]
     vals = [c for _, c in seq]
     # Weekend bars (Saturday/Sunday) get a distinct color.
-    colors = [_WEEKEND if d in ("Saturday", "Sunday") else _BAR for d in labels]
+    is_weekend = [d in ("Saturday", "Sunday") for d in labels]
+    colors = [_WEEKEND if w else _BAR for w in is_weekend]
     bars = ax.bar(range(len(vals)), vals, color=colors)
     _bar_labels(ax, bars, "%.0f")
     ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
     ax.set_ylabel("Vehicle Counts"); ax.set_xlabel("Days")
     _headroom(ax, vals, _BAR_HEADROOM)
-    from matplotlib.patches import Patch
-    # Upper right, above the bars: the headroom keeps this band clear, and the
-    # opaque backing covers the case where a Sunday bar runs tall.
-    ax.legend(handles=[Patch(color=_BAR, label="Weekday"), Patch(color=_WEEKEND, label="Weekend")],
-              loc="upper right", **_LEGEND_KW)
+    # Below the axes, not in a corner of them. The headroom only clears the band
+    # above the TALLEST bar, so an upper-right legend sat on the last bar's count
+    # label whenever the bars were level - every 3-day Tue-Thu count. And the key
+    # is only drawn when both colors are on the chart: a weekday-only study used to
+    # carry a "Weekend" swatch for bars it does not have.
+    if any(is_weekend) and not all(is_weekend):
+        from matplotlib.patches import Patch
+        fig.legend(handles=[Patch(color=_BAR, label="Weekday"),
+                            Patch(color=_WEEKEND, label="Weekend")],
+                   loc="outside lower center", ncol=2, fontsize=8, frameon=False)
     ax.set_title("Daily Distribution")
-    fig.tight_layout()
+    fig.td_fixed_layout = True   # see _pdf_figure: do not re-run tight_layout
     return fig
 
 
